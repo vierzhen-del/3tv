@@ -1,0 +1,64 @@
+# 한국 시황 세션: 평일 07:50 KST (= 전일 22:50 UTC, 일~목) 시작
+# 07:55~08:20 KST 라이브 녹화 → 분석 (아침 us 리포트 연동) → 전송 + 옵시디안 병합
+name: kr-session
+
+on:
+  schedule:
+    - cron: "50 22 * * 0-4"   # KST 월~금 07:50
+  workflow_dispatch:
+    inputs:
+      vod_url:
+        description: "라이브 대신 사용할 VOD URL (테스트/복구용, 비우면 라이브 캡처)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -r requirements.txt
+
+      - name: Run pipeline (kr)
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_PARENT_ID: ${{ secrets.NOTION_PARENT_ID }}
+        run: |
+          VOD="${{ github.event.inputs.vod_url }}"
+          if [ -n "$VOD" ]; then
+            python -m threetv.main --session kr --vod-url "$VOD"
+          else
+            python -m threetv.main --session kr
+          fi
+
+      - name: Upload analysis artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-session-${{ github.run_id }}
+          path: |
+            output/**/vision_results.json
+            output/**/transcript.txt
+            output/**/report.json
+            output/**/report.md
+          if-no-files-found: ignore
+          retention-days: 7

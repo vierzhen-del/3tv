@@ -1,0 +1,21 @@
+# 보유종목 / 관심종목
+# 방송에서 아래 종목이 언급되면 리포트의 "💼 보유종목 언급 체크" 섹션에 강조됩니다.
+# name: 방송에서 불리는 이름(한글 포함 별칭은 aliases에), ticker: 시세 조회용
+#   - 미국: yfinance 티커 (예: AAPL, SCHD)
+#   - 한국: 6자리 종목코드 (예: 005930)
+
+holdings:
+  - name: "SCHD"
+    ticker: "SCHD"
+    market: US
+    aliases: ["슈드", "미국배당다우존스"]
+  # - name: "삼성전자"
+  #   ticker: "005930"
+  #   market: KR
+  #   aliases: ["삼전"]
+
+watchlist: []
+  # - name: "엔비디아"
+  #   ticker: "NVDA"
+  #   market: US
+  #   aliases: ["NVIDIA"]

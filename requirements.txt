@@ -1,0 +1,15 @@
+# 3tv — 삼프로TV 라이브 분석 파이프라인 의존성
+yt-dlp>=2025.1.1
+requests>=2.31
+PyYAML>=6.0
+python-dotenv>=1.0
+opencv-python-headless>=4.9
+Pillow>=10.0
+ImageHash>=4.3
+numpy>=1.26
+faster-whisper>=1.0
+google-genai>=1.0
+anthropic>=0.40
+yfinance>=0.2.40
+pykrx>=1.0.45
+PyNaCl>=1.5

@@ -1,0 +1,20 @@
+# 로컬 환경
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# 파이프라인 산출물 (녹화영상/프레임/추출물)
+output/
+*.mp4
+*.mkv
+*.ts
+*.wav
+
+# 옵시디안 볼트 임시 clone
+.vault_tmp/
+
+# 쿠키 (절대 커밋 금지)
+cookies.txt
+*.cookies

@@ -1,0 +1,72 @@
+# 3tv 파이프라인 설정
+# 시간은 모두 KST(Asia/Seoul), 평일 기준
+
+channel:
+  handle: "3protv"                                  # 삼프로TV
+  live_url: "https://www.youtube.com/@3protv/live"
+
+sessions:
+  us:                       # 미국 시황 (전일 미국장 마감 리뷰)
+    label: "미국 시황"
+    # 05:50~06:00 미국 패널(있는 날만) + 06:00~06:40 본방송을 하나의 구간으로 녹화
+    poll_from_kst: "05:45"  # 이 시각부터 라이브 폴링 시작
+    start_kst: "05:50"
+    end_kst: "06:40"
+  kr:                       # 한국 시황 (당일 한국장 전망)
+    label: "한국 시황"
+    poll_from_kst: "07:50"
+    start_kst: "07:55"
+    end_kst: "08:20"
+
+capture:
+  resolution: 480           # OCR에 충분 + 용량 절약
+  poll_interval_sec: 30     # 라이브 시작 대기 폴링 간격
+  max_retries: 3
+
+frames:
+  interval_sec: 10          # 10초당 1프레임 → 40분 ≈ 240장
+  # 자료화면 휴리스틱: 흰 배경(고명도·저채도) 픽셀 비율
+  white_value_min: 190      # HSV V 채널 최소값 (0~255)
+  white_sat_max: 45         # HSV S 채널 최대값 (0~255)
+  white_ratio_min: 0.35     # 프레임 내 흰 픽셀 비율 임계치
+  phash_distance: 6         # perceptual hash 거리 이하 → 중복으로 제거
+  max_frames_to_vision: 80  # Gemini로 보낼 최대 프레임 수 (비용 상한)
+
+models:
+  gemini: "gemini-2.5-flash"
+  claude: "claude-sonnet-5"
+  whisper: "small"          # faster-whisper 모델 크기 (tiny/base/small/medium)
+
+market:
+  # 리포트에 항상 포함할 주요 지수/자산 (yfinance 티커)
+  indices:
+    "^IXIC": "나스닥"
+    "^GSPC": "S&P500"
+    "^DJI": "다우존스"
+    "^SOX": "필라델피아 반도체"
+    "^KS11": "KOSPI"
+    "^KQ11": "KOSDAQ"
+    "KRW=X": "원/달러"
+    "CL=F": "WTI"
+    "^TNX": "미국채 10년물"
+
+report:
+  title_prefix: "3protv오늘"
+  disclaimer: "※ 본 리포트는 방송 내용 기반 자동 요약이며 투자 참고용입니다. 투자 판단의 책임은 본인에게 있습니다."
+
+telegram:
+  max_message_len: 4000     # 텔레그램 한도 4096 대비 여유
+
+kakao:
+  enabled: true
+
+obsidian:
+  enabled: true
+  # 옵시디안 second brain 볼트 GitHub repo (예: "vierzhen-del/second-brain")
+  # 비워두면 옵시디안 아카이브를 건너뜀
+  vault_repo: ""
+  vault_branch: "main"
+  base_path: "3protv"       # 볼트 내 저장 루트 → 3protv/YYYY/MM/파일.md
+
+notion:
+  enabled: false            # NOTION_API_KEY/NOTION_PARENT_ID 등록 후 true로
