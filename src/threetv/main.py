@@ -46,6 +46,39 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def truncate_at_host_ad(
+    vision_results: list[dict], transcript: str, min_sec: int
+) -> tuple[list[dict], str, int | None]:
+    """진행자광고(보드형 광고 소개) 감지 시 방송 종료로 취급.
+
+    세션 시작 min_sec 이후 첫 '진행자광고' 프레임의 timestamp를 컷오프로,
+    이후의 vision 결과와 전사 라인([MM:SS] 태그 기준)을 제거한다.
+    """
+    cutoff: int | None = None
+    for r in vision_results:
+        ts = int(r.get("timestamp_sec", 0))
+        if r.get("type") == "진행자광고" and ts >= min_sec:
+            cutoff = ts
+            break
+    if cutoff is None:
+        return vision_results, transcript, None
+
+    kept_vision = [r for r in vision_results if int(r.get("timestamp_sec", 0)) < cutoff]
+    kept_lines = []
+    for line in transcript.split("\n"):
+        if line.startswith("[") and "]" in line:
+            try:
+                mm, ss = line[1 : line.index("]")].split(":")
+                if int(mm) * 60 + int(ss) >= cutoff:
+                    break  # 이후 라인은 모두 컷오프 이후
+            except ValueError:
+                pass
+        kept_lines.append(line)
+    mm, ss = divmod(cutoff, 60)
+    log.info("진행자광고 감지 [%02d:%02d] → 방송 종료 취급, 이후 내용 분석 제외", mm, ss)
+    return kept_vision, "\n".join(kept_lines), cutoff
+
+
 def get_video(args: argparse.Namespace, settings: dict, out_dir: Path) -> Path:
     if args.video_file:
         video = Path(args.video_file)
@@ -79,17 +112,32 @@ def run(args: argparse.Namespace) -> int:
             )
         return 1
 
-    # 2. 프레임 추출 + 자료화면 선별 (흰 배경 휴리스틱 + 중복 제거)
-    selected = prepare_frames(video, out_dir, settings["frames"])
+    session_cfg = settings["sessions"][session]
+
+    # 2. 프레임 추출 + 자료화면 후보 선별
+    #    us: all 모드 (어두운 Finviz류 데이터화면 포함) / kr: white 모드 (흰배경 중심)
+    selected = prepare_frames(
+        video, out_dir, settings["frames"],
+        mode=session_cfg.get("frame_filter", "white"),
+    )
     if not selected:
         log.warning("자료화면 후보가 0장 — 전사만으로 리포트 진행")
 
-    # 3. Gemini 비전 분석 (자료화면 확정 + 텍스트/그래프 추출, 광고 제외)
-    vision_results = analyze_frames(selected, settings["models"]["gemini"], out_dir) \
+    # 3. Gemini 비전 분석 (분류 + 텍스트/그래프 추출; 배너 광고는 프롬프트에서 무시)
+    all_vision = analyze_frames(selected, settings["models"]["gemini"], out_dir) \
         if selected else []
 
     # 4. Whisper 음성 전사
     transcript = transcribe(video, out_dir, settings["models"]["whisper"])
+
+    # 4.5 방송 종료 감지: 진행자가 보드형 광고 소개를 시작하면 이후 내용 제외
+    if session_cfg.get("end_on_host_ad"):
+        all_vision, transcript, _ = truncate_at_host_ad(
+            all_vision, transcript, session_cfg.get("host_ad_min_sec", 1200)
+        )
+    # 최종 분석 대상은 자료화면만 (광고/스튜디오/진행자광고 제외)
+    vision_results = [r for r in all_vision if r.get("type") == "자료화면"]
+    log.info("최종 분석 자료화면: %d장", len(vision_results))
 
     # 5. 종목 추출 → 실시세 검증
     mentions = extract_mentions(settings["models"]["claude"], vision_results, transcript)

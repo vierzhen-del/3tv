@@ -1,8 +1,12 @@
 """프레임 추출 + 자료화면 선별.
 
 1) ffmpeg로 N초당 1프레임 추출
-2) 흰 배경 휴리스틱(고명도·저채도 픽셀 비율)으로 자료화면 후보 1차 선별
-   — 사용자 정의: 흰색 배경 텍스트 화면 = 자료화면 (스튜디오/광고와 구분)
+2) 선별 모드 (세션별 settings.yaml frame_filter):
+   - white: 흰 배경 휴리스틱(고명도·저채도 픽셀 비율)으로 자료화면 후보를 하드 필터
+     — 방송2(한국 시황)용: 흰색 배경 자료화면 중심
+   - all  : 흰 배경을 하드 필터가 아닌 **우선순위**로만 사용 — 어두운 배경의
+     전체화면 데이터/브라우저 자료화면(Finviz, 차트 사이트 등)도 Gemini 분류로 전달
+     — 방송1(미국 시황)용
 3) perceptual hash로 유사 프레임 중복 제거 → 비전 API 비용 절감
 """
 from __future__ import annotations
@@ -58,27 +62,32 @@ def white_background_ratio(img_bgr: np.ndarray, value_min: int, sat_max: int) ->
 
 
 def select_material_frames(
-    frames: list[FrameInfo], frames_cfg: dict
+    frames: list[FrameInfo], frames_cfg: dict, mode: str = "white"
 ) -> list[FrameInfo]:
-    """흰 배경 필터 → phash 중복 제거 → 상한 적용."""
+    """자료화면 후보 선별 → phash 중복 제거 → 상한 적용.
+
+    mode="white": 흰 배경 비율이 임계치 이상인 프레임만 통과 (하드 필터)
+    mode="all"  : 전 프레임 통과, 상한 초과 시 흰 배경 비율이 높은 프레임 우선 유지
+    """
     value_min = frames_cfg["white_value_min"]
     sat_max = frames_cfg["white_sat_max"]
     ratio_min = frames_cfg["white_ratio_min"]
     phash_dist = frames_cfg["phash_distance"]
     max_frames = frames_cfg["max_frames_to_vision"]
 
-    # 1차: 흰 배경 비율 필터
+    # 1차: 흰 배경 비율 계산 (+ white 모드면 하드 필터)
     candidates: list[FrameInfo] = []
     for fi in frames:
         img = cv2.imread(str(fi.path))
         if img is None:
             continue
         fi.white_ratio = white_background_ratio(img, value_min, sat_max)
-        if fi.white_ratio >= ratio_min:
-            candidates.append(fi)
-    log.info("흰 배경 자료화면 후보: %d/%d장", len(candidates), len(frames))
+        if mode == "white" and fi.white_ratio < ratio_min:
+            continue
+        candidates.append(fi)
+    log.info("[%s 모드] 자료화면 후보: %d/%d장", mode, len(candidates), len(frames))
 
-    # 2차: perceptual hash 중복 제거 (같은 슬라이드가 오래 떠 있는 경우)
+    # 2차: perceptual hash 중복 제거 (같은 화면이 오래 떠 있는 경우)
     unique: list[FrameInfo] = []
     hashes: list[imagehash.ImageHash] = []
     for fi in candidates:
@@ -88,18 +97,26 @@ def select_material_frames(
             continue
         hashes.append(h)
         unique.append(fi)
-    log.info("중복 제거 후 유니크 자료화면: %d장", len(unique))
+    log.info("중복 제거 후 유니크 프레임: %d장", len(unique))
 
-    # 3차: 비용 상한 — 초과 시 시간축에서 균등 샘플링
+    # 3차: 비용 상한
     if len(unique) > max_frames:
-        idx = np.linspace(0, len(unique) - 1, max_frames).astype(int)
-        unique = [unique[i] for i in idx]
-        log.info("상한 적용: %d장으로 샘플링", max_frames)
+        if mode == "all":
+            # 흰 배경 비율 높은 순으로 유지하되 시간순 정렬 복원
+            unique = sorted(unique, key=lambda f: f.white_ratio, reverse=True)[:max_frames]
+            unique = sorted(unique, key=lambda f: f.timestamp_sec)
+            log.info("상한 적용(all): 흰 배경 우선 %d장 유지", max_frames)
+        else:
+            idx = np.linspace(0, len(unique) - 1, max_frames).astype(int)
+            unique = [unique[i] for i in idx]
+            log.info("상한 적용(white): 시간축 균등 %d장 샘플링", max_frames)
     return unique
 
 
-def prepare_frames(video: Path, out_dir: Path, frames_cfg: dict) -> list[FrameInfo]:
+def prepare_frames(
+    video: Path, out_dir: Path, frames_cfg: dict, mode: str = "white"
+) -> list[FrameInfo]:
     frames = extract_frames(video, out_dir, frames_cfg["interval_sec"])
     if not frames:
         raise RuntimeError("프레임 추출 결과가 비어 있음 — 영상 파일 확인 필요")
-    return select_material_frames(frames, frames_cfg)
+    return select_material_frames(frames, frames_cfg, mode)

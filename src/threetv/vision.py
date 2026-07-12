@@ -22,16 +22,26 @@ PROMPT = """당신은 한국 경제방송(삼프로TV) 화면 분석 전문가�
 각 이미지당 하나의 객체:
 {
   "index": <이미지 순번, 0부터>,
-  "type": "자료화면" | "스튜디오" | "광고" | "기타",
-  "text": "<화면의 모든 텍스트를 읽어서 기록. 표는 행 단위로>",
+  "type": "자료화면" | "스튜디오" | "광고" | "진행자광고" | "기타",
+  "text": "<자료화면의 본 자료 텍스트를 읽어서 기록. 표는 행 단위로. 영문 자료는 핵심 내용을 한국어로 정리하되 고유명사·수치는 원문 유지>",
   "stocks": [{"name": "<종목/지수명>", "price": "<표시된 가격/지수, 없으면 null>", "change": "<표시된 등락률/폭, 없으면 null>", "market": "US"|"KR"|"OTHER"}],
   "chart": "<그래프/차트가 있으면 무엇의 추이인지, 방향(상승/하락/횡보)과 함께 설명. 없으면 null>"
 }
 
 판별 기준:
-- 자료화면: 흰색 배경에 텍스트/표/그래프가 있는 방송용 자료 슬라이드 (뉴스 헤드라인, 지수표, 종목표, 경제지표 등)
-- 광고: 상품/서비스 홍보, 협찬, 구독 유도 화면 → text는 간단히만
-- 스튜디오: 진행자/패널이 보이는 화면
+- 자료화면(분석 대상):
+  * 흰색 배경에 텍스트/표/그래프가 있는 방송용 자료 슬라이드 (뉴스 헤드라인, 지수표, 종목표, 경제지표 등)
+  * 전체화면 데이터/브라우저 화면 — Finviz 맵, Investing.com 차트, 스크리너 등은 어두운 배경이어도 자료화면임
+  * 영문 기사/자료 화면(월가 인사이트 등) — 영문이어도 반드시 분석 대상 (하단 한국어 자막이 있으면 함께 반영)
+- 광고: 화면 전체가 상품/서비스 홍보, 협찬, 구독 유도인 경우 → text는 상품명만 간단히
+- 진행자광고: 진행자가 앞에 놓인 보드/패널형 광고 상품을 들거나 소개하는 화면 (방송 종료 신호로 사용됨)
+- 스튜디오: 진행자/패널이 보이는 일반 진행 화면
+
+⚠️ 중요 — 자료화면 내 배너 광고 처리:
+자료화면·스튜디오 화면의 배경 배너와 하단 고정 배너(ETF 상품, 의류, 식품, 멤버십 광고 등)는
+**무시하고 본 자료 내용만 추출**하세요. 배너 속 ETF/상품명을 stocks에 넣지 마세요.
+type 판정도 본 자료 기준으로 하세요 (배너가 있어도 본 자료가 시황 자료면 자료화면).
+
 - 텍스트가 흐릿해도 읽을 수 있는 만큼 최대한 추출하세요. 숫자(가격·등락률)는 특히 정확하게."""
 
 
@@ -95,12 +105,14 @@ def analyze_frames(frames: list[FrameInfo], model: str, out_dir: Path) -> list[d
             batch_start // BATCH_SIZE, len(results), len(frames),
         )
 
-    material = [r for r in results if r.get("type") == "자료화면"]
-    log.info("자료화면 확정: %d장 (광고/스튜디오 %d장 제외)",
-             len(material), len(results) - len(material))
+    n_material = sum(1 for r in results if r.get("type") == "자료화면")
+    log.info("자료화면: %d장 / 광고·스튜디오·진행자광고 등: %d장",
+             n_material, len(results) - n_material)
 
     out_file = out_dir / "vision_results.json"
     out_file.write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    return material
+    # 전체 분류 결과 반환 — 자료화면 필터링과 진행자광고(방송 종료 신호) 감지는
+    # 호출 측(main)에서 수행
+    return sorted(results, key=lambda r: r.get("timestamp_sec", 0))

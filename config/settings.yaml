@@ -8,15 +8,27 @@ channel:
 sessions:
   us:                       # 미국 시황 (전일 미국장 마감 리뷰)
     label: "미국 시황"
-    # 05:50~06:00 미국 패널(있는 날만) + 06:00~06:40 본방송을 하나의 구간으로 녹화
+    # 05:55~06:01 비정기방송(월가 인사이트 등, 영문 자료 포함) + 06:00~06:45 본방1을
+    # 하나의 구간으로 녹화
     poll_from_kst: "05:45"  # 이 시각부터 라이브 폴링 시작
-    start_kst: "05:50"
-    end_kst: "06:40"
+    start_kst: "05:55"
+    end_kst: "06:45"
+    # all: 흰배경을 하드 필터가 아닌 우선순위로만 사용 — 어두운 배경의
+    #      전체화면 데이터/브라우저 자료화면(Finviz 등)도 Gemini 분류로 전달
+    frame_filter: all
+    # 진행자가 보드형태 광고 소개를 시작하면 방송1 종료로 취급 (이후 분석 제외)
+    end_on_host_ad: true
+    # 종료 감지는 세션 시작 후 이 시간(초) 이후의 진행자광고 화면만 인정
+    host_ad_min_sec: 1200
   kr:                       # 한국 시황 (당일 한국장 전망)
     label: "한국 시황"
+    # 방송2: 07:58~08:25, 흰색배경 자료화면까지 요약 정리 후 종료
     poll_from_kst: "07:50"
     start_kst: "07:55"
-    end_kst: "08:20"
+    end_kst: "08:25"
+    frame_filter: white     # 흰색배경 자료화면 중심
+    end_on_host_ad: false
+    host_ad_min_sec: 1200
 
 capture:
   resolution: 480           # OCR에 충분 + 용량 절약
