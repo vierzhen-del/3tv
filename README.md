@@ -45,8 +45,14 @@ capture (yt-dlp+ffmpeg 라이브 녹화, 480p)
 | `YOUTUBE_COOKIES` | 권장 | 유튜브 봇차단 대응 (아래 참고) |
 | `KAKAO_REST_API_KEY` | 선택 | 카카오 나에게 보내기 |
 | `KAKAO_REFRESH_TOKEN` | 선택 | `scripts/kakao_get_token.py`로 발급 |
-| `GH_PAT` | 선택 | 옵시디안 볼트 push + 카카오 토큰 자동갱신 (repo 권한) |
+| `GH_PAT` | 선택 | 옵시디안 볼트 push + 카카오 토큰 자동갱신 — **최소 스코프 발급 필수 (아래 참고)** |
 | `NOTION_API_KEY` / `NOTION_PARENT_ID` | 선택 | 노션 아카이브 (settings.yaml에서 활성화) |
+
+> ⚠️ **`GH_PAT`는 반드시 Fine-grained PAT로 최소 스코프 발급하세요.** classic PAT의 `repo` 스코프는 계정의 **모든** 저장소에 대한 읽기/쓰기 권한을 부여합니다. 이 토큰이 유출되면(로그 노출, 워크플로 변조 등) 공격자가 워크플로 파일에 시크릿 유출 스텝을 몰래 추가해 `ANTHROPIC_API_KEY`·`YOUTUBE_COOKIES` 등 이 저장소의 다른 모든 시크릿까지 훔쳐갈 수 있습니다. 발급 절차:
+> 1. GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate new token
+> 2. Resource owner: 본인 계정, **Repository access: Only select repositories** → `3tv`(카카오 토큰 자동갱신용) + 옵시디안 볼트 repo 두 개만 선택
+> 3. Permissions: `3tv`에는 **Secrets: Read and write**만, 볼트 repo에는 **Contents: Read and write**만 부여 (그 외 전부 No access)
+> 4. 위 두 저장소 외에는 접근 권한이 전혀 없으므로, 유출되어도 피해 범위가 이 두 repo로 한정됩니다
 
 ### 2. 유튜브 쿠키 (권장)
 
@@ -106,6 +112,7 @@ PYTHONPATH=src python -m threetv.main --session us \
 1. **유튜브 데이터센터 IP 차단** — 쿠키로 완화, 실패 시 텔레그램 경고 + 로컬/VOD 복구 경로. 첫 1~2주는 실운영 모니터링 권장
 2. **라이브 시작 시각 변동** — 세션 시작 전부터 종료 시각까지 30초 간격 폴링으로 대응
 3. **카카오 refresh token 만료** — 자동 갱신 실패 시 `scripts/kakao_get_token.py`로 재발급
+4. **`GH_PAT` 스코프 관리** — classic PAT의 넓은 `repo` 스코프로 발급하면, 토큰 유출 시 이 저장소를 포함한 계정의 모든 저장소가 위험해집니다. 반드시 위 "GitHub Secrets 등록"의 Fine-grained PAT 가이드대로 `3tv` + 볼트 repo 2곳으로만 스코프를 한정하세요
 
 ## 면책
 
