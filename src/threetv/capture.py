@@ -102,15 +102,29 @@ def record_stream(stream_url: str, out_file: Path, until_kst: datetime) -> Path:
     return out_file
 
 
-def download_vod(vod_url: str, out_file: Path, resolution: int) -> Path:
-    """VOD 다운로드 (테스트/복구 경로)."""
+def download_vod(
+    vod_url: str,
+    out_file: Path,
+    resolution: int,
+    start_sec: int | None = None,
+    duration_sec: int | None = None,
+) -> Path:
+    """VOD 다운로드 (테스트/복구 경로).
+
+    start_sec/duration_sec을 함께 주면 yt-dlp --download-sections로 해당
+    구간만 정확히 잘라 받는다 (사전검토용 트리밍 테스트 — 시간·비용 절감).
+    영상 전체를 받은 뒤 자르는 방식이 아니라 필요한 구간만 다운로드한다.
+    """
     cookies = _cookies_file()
     cmd = _ytdlp_base(cookies) + [
         "-f", f"best[height<={resolution}]/bv*[height<={resolution}]+ba/best",
         "--merge-output-format", "mp4",
-        "-o", str(out_file),
-        vod_url,
     ]
+    if start_sec is not None and duration_sec is not None:
+        end_sec = start_sec + duration_sec
+        cmd += ["--download-sections", f"*{start_sec}-{end_sec}"]
+        log.info("VOD 구간 트리밍: %d초~%d초 (%d초 분량)만 다운로드", start_sec, end_sec, duration_sec)
+    cmd += ["-o", str(out_file), vod_url]
     log.info("VOD 다운로드: %s", vod_url)
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     if proc.returncode != 0 or not out_file.exists():

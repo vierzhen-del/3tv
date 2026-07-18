@@ -118,6 +118,17 @@ PYTHONPATH=src python -m threetv.main --session us \
 ```
 결과물은 `output/YYYYMMDD/us/`에 저장됩니다: 선별된 프레임(`frames/`), `vision_results.json`, `transcript.txt`, `report.md`, `report.json`
 
+### 구간 트리밍 사전검토 (비용 절감)
+
+전체 방송 대신 지정 구간만 다운로드·분석하고 싶을 때 `--trim-start`/`--trim-duration`을 함께 씁니다(분:초 단위, `MM:SS`). yt-dlp가 해당 구간만 정확히 받아오므로 다운로드·분석 비용이 구간 길이에 비례해 줄어듭니다. 결과는 `output/YYYYMMDD/<세션>_trim/`에 저장되어 전체구간 결과(`output/YYYYMMDD/<세션>/`)와 겹치지 않고 나란히 비교할 수 있습니다.
+
+```bash
+PYTHONPATH=src python -m threetv.main --session us \
+  --vod-url "https://www.youtube.com/live/C4VUZP2h24Y" \
+  --trim-start 6:00 --trim-duration 3:00 \
+  --skip-notify --skip-archive
+```
+
 ## 알려진 리스크
 
 1. **유튜브 데이터센터 IP 차단** — 쿠키로 완화, 실패 시 텔레그램 경고 + 로컬/VOD 복구 경로. 첫 1~2주는 실운영 모니터링 권장

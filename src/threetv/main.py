@@ -13,6 +13,11 @@
 
   # 전송 없이 분석 결과만 파일로 (구조 검증/디버깅)
   python -m threetv.main --session us --vod-url ... --skip-notify
+
+  # VOD 구간 트리밍 사전검토 (전체 대신 지정 구간만 다운로드·분석, 비용 절감)
+  # 결과는 output/YYYYMMDD/us_trim/ 에 저장되어 전체구간 결과(output/YYYYMMDD/us/)와 비교 가능
+  python -m threetv.main --session us --vod-url ... --trim-start 6:00 --trim-duration 3:00 \
+    --skip-notify --skip-archive
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ from pathlib import Path
 from . import market
 from .capture import CaptureError, capture_live_session, download_vod
 from .common import (load_env, load_holdings, load_settings, log, now_kst,
-                     output_dir, setup_logging)
+                     output_dir, parse_duration, setup_logging)
 from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
@@ -40,10 +45,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--session", required=True, choices=["us", "kr"])
     p.add_argument("--vod-url", help="라이브 대신 VOD URL로 실행 (테스트/복구)")
     p.add_argument("--video-file", help="이미 받은 영상 파일로 실행 (캡처 생략)")
+    p.add_argument("--trim-start", metavar="MM:SS",
+                    help="VOD 구간 트리밍 시작 시각 (MM:SS/HH:MM:SS/초, --vod-url 전용, --trim-duration과 함께 사용)")
+    p.add_argument("--trim-duration", metavar="MM:SS",
+                    help="VOD 구간 트리밍 길이 (MM:SS/HH:MM:SS/초, --trim-start와 함께 사용)")
     p.add_argument("--skip-notify", action="store_true", help="텔레그램/카카오 전송 생략")
     p.add_argument("--skip-archive", action="store_true", help="옵시디안/노션 저장 생략")
     p.add_argument("--verbose", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+
+    if bool(args.trim_start) != bool(args.trim_duration):
+        p.error("--trim-start와 --trim-duration은 함께 지정해야 합니다")
+    if args.trim_start and not args.vod_url:
+        p.error("--trim-start/--trim-duration은 --vod-url과 함께만 사용 가능합니다")
+    return args
 
 
 def truncate_at_host_ad(
@@ -86,9 +101,13 @@ def get_video(args: argparse.Namespace, settings: dict, out_dir: Path) -> Path:
             raise CaptureError(f"영상 파일 없음: {video}")
         return video
     if args.vod_url:
+        start_sec = duration_sec = None
+        if args.trim_start:
+            start_sec = parse_duration(args.trim_start)
+            duration_sec = parse_duration(args.trim_duration)
         return download_vod(
             args.vod_url, out_dir / f"{args.session}_vod.mp4",
-            settings["capture"]["resolution"],
+            settings["capture"]["resolution"], start_sec, duration_sec,
         )
     return capture_live_session(settings, args.session, out_dir)
 
@@ -96,7 +115,8 @@ def get_video(args: argparse.Namespace, settings: dict, out_dir: Path) -> Path:
 def run(args: argparse.Namespace) -> int:
     settings = load_settings()
     session = args.session
-    out_dir = output_dir(session)
+    # 트리밍 테스트는 전체구간 결과와 겹치지 않게 별도 폴더(<session>_trim)에 저장
+    out_dir = output_dir(session, tag="trim" if args.trim_start else None)
     label = settings["sessions"][session]["label"]
     log.info("=== 3tv %s 세션 시작 (%s) ===", label, now_kst().strftime("%Y-%m-%d %H:%M"))
 
