@@ -1,10 +1,11 @@
-# 미국 시황 세션: 평일 05:55 KST (= 전일 20:55 UTC, 일~목) 시작
-# 05:55~06:40 KST 라이브 녹화(비정기+본방1 40분) → 분석 → 전송 + 옵시디안 저장
+# 미국 시황 세션: 평일 05:00 KST (= 전일 20:00 UTC, 일~목) 기동
+# ⚠️ GitHub cron은 40~55분 지연이 흔해(실측 7/12~7/16) 여유를 두고 기동하고,
+#    capture.py가 방송 시작 시각(05:55 KST)까지 대기한 뒤 05:55~06:40 녹화한다.
 name: us-session
 
 on:
   schedule:
-    - cron: "55 20 * * 0-4"   # KST 월~금 05:55
+    - cron: "0 20 * * 0-4"    # KST 월~금 05:00 기동 (지연 흡수 버퍼 55분)
   workflow_dispatch:
     inputs:
       vod_url:
@@ -15,7 +16,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 150      # 방송시작 대기(최대 55분) + 녹화 45분 + 분석 여유
     steps:
       - uses: actions/checkout@v4
 

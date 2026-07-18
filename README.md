@@ -50,8 +50,8 @@ capture (yt-dlp+ffmpeg 라이브 녹화, 480p)
 
 > ⚠️ **`GH_PAT`는 반드시 Fine-grained PAT로 최소 스코프 발급하세요.** classic PAT의 `repo` 스코프는 계정의 **모든** 저장소에 대한 읽기/쓰기 권한을 부여합니다. 이 토큰이 유출되면(로그 노출, 워크플로 변조 등) 공격자가 워크플로 파일에 시크릿 유출 스텝을 몰래 추가해 `ANTHROPIC_API_KEY`·`YOUTUBE_COOKIES` 등 이 저장소의 다른 모든 시크릿까지 훔쳐갈 수 있습니다. 발급 절차:
 > 1. GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate new token
-> 2. Resource owner: 본인 계정, **Repository access: Only select repositories** → `3tv`(카카오 토큰 자동갱신용) + 옵시디안 볼트 repo 두 개만 선택
-> 3. Permissions: `3tv`에는 **Secrets: Read and write**만, 볼트 repo에는 **Contents: Read and write**만 부여 (그 외 전부 No access)
+> 2. Resource owner: 본인 계정, **Repository access: Only select repositories** → `3tv`(카카오 토큰 자동갱신용) + `3tv-reports`(리포트 중계 repo) 두 개만 선택
+> 3. Permissions: `3tv`에는 **Secrets: Read and write**만, `3tv-reports`에는 **Contents: Read and write**만 부여 (그 외 전부 No access)
 > 4. 위 두 저장소 외에는 접근 권한이 전혀 없으므로, 유출되어도 피해 범위가 이 두 repo로 한정됩니다
 
 ### 2. 유튜브 쿠키 (권장)
@@ -65,15 +65,26 @@ GitHub Actions 같은 데이터센터 IP는 유튜브가 yt-dlp 접근을 차단
 
 `config/holdings.yaml`에 보유/관심 종목을 채우면 방송 언급 시 리포트에 "💼 보유종목 언급 체크" 섹션으로 강조됩니다.
 
-### 4. 옵시디안 second brain 연동 (S26 + 탭S9)
+### 4. 옵시디안 second brain 연동 (Syncthing 구조, S9 마스터 + S26)
 
-1. 옵시디안 볼트를 GitHub 비공개 repo로 관리 (없으면 새 repo 생성 후 볼트 업로드)
-2. `config/settings.yaml`의 `obsidian.vault_repo`에 `계정명/repo명` 입력
-3. `GH_PAT` secret 등록 (볼트 repo 쓰기 권한)
-4. S26/탭S9 옵시디안에 **Obsidian Git** 커뮤니티 플러그인 설치:
-   - Settings → Community plugins → Browse → "Git" 설치·활성화
-   - 플러그인 설정에서 GitHub 인증(PAT) 후 `Auto pull interval` 10~30분 설정
+볼트(`RaeVault`)는 **Syncthing**(S9 마스터 ⇄ S26 P2P)으로 동기화되므로 볼트 자체를 GitHub에 올리지 않습니다. 대신 중계 repo를 거칩니다:
+
+```
+GitHub Actions ──push──▶ 3tv-reports repo (private, 중계용)
+                              │ fetch (n8n 스케줄, 07:10/08:50 KST)
+                              ▼
+        S9: /storage/emulated/0/obsidian/RaeVault/3protv/YYYY/MM/*.md
+                              │ Syncthing 자동 전파
+                              ▼
+                         S26 옵시디안
+```
+
+1. GitHub에 **`3tv-reports` private repo** 생성 (빈 repo, README만 있어도 됨)
+2. `config/settings.yaml`의 `obsidian.vault_repo`에 `계정명/3tv-reports` 입력
+3. `GH_PAT` secret이 이 repo에 Contents:write 권한을 갖는지 확인
+4. S9의 n8n에 동기화 워크플로 등록 — **`docs/n8n_s9_sync.md` 가이드 참고** (`docs/n8n_3tv_sync_workflow.json` import 가능)
 5. 리포트는 `3protv/YYYY/MM/3protv오늘_YYYYMMDD_키워드.md`로 저장되며 frontmatter(날짜/태그/언급종목)가 있어 Dataview 검색이 가능합니다
+6. write 충돌 규칙: n8n의 3tv 워크플로는 볼트 내 `3protv/` 폴더에만 쓰기 (기존 n8n `00_Inbox/` 규칙과 병행 — 새 파일 생성만이라 Syncthing 충돌 없음)
 
 ### 5. 카카오 나에게 보내기 (선택)
 
@@ -110,9 +121,10 @@ PYTHONPATH=src python -m threetv.main --session us \
 ## 알려진 리스크
 
 1. **유튜브 데이터센터 IP 차단** — 쿠키로 완화, 실패 시 텔레그램 경고 + 로컬/VOD 복구 경로. 첫 1~2주는 실운영 모니터링 권장
-2. **라이브 시작 시각 변동** — 세션 시작 전부터 종료 시각까지 30초 간격 폴링으로 대응
-3. **카카오 refresh token 만료** — 자동 갱신 실패 시 `scripts/kakao_get_token.py`로 재발급
-4. **`GH_PAT` 스코프 관리** — classic PAT의 넓은 `repo` 스코프로 발급하면, 토큰 유출 시 이 저장소를 포함한 계정의 모든 저장소가 위험해집니다. 반드시 위 "GitHub Secrets 등록"의 Fine-grained PAT 가이드대로 `3tv` + 볼트 repo 2곳으로만 스코프를 한정하세요
+2. **GitHub cron 지연** — 스케줄 실행이 40~55분 늦게 시작되는 것이 실측으로 확인됨(2026-07 운영 로그). 이 때문에 cron을 방송 55분 전(05:00/07:00 KST)에 기동하고 스크립트가 방송 시작까지 대기하는 구조. 지연이 55분을 넘는 날은 캡처 실패 → 텔레그램 경고 후 VOD 재실행으로 복구
+3. **라이브 시작 시각 변동** — 세션 시작 전부터 종료 시각까지 30초 간격 폴링으로 대응
+4. **카카오 refresh token 만료** — 자동 갱신 실패 시 `scripts/kakao_get_token.py`로 재발급
+5. **`GH_PAT` 스코프 관리** — classic PAT의 넓은 `repo` 스코프로 발급하면, 토큰 유출 시 이 저장소를 포함한 계정의 모든 저장소가 위험해집니다. 반드시 위 "GitHub Secrets 등록"의 Fine-grained PAT 가이드대로 `3tv` + 볼트 repo 2곳으로만 스코프를 한정하세요
 
 ## 면책
 

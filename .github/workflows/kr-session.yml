@@ -1,10 +1,10 @@
-# 한국 시황 세션: 평일 07:55 KST (= 전일 22:55 UTC, 일~목) 시작
-# 07:55~08:25 KST 라이브 녹화(방송2) → 분석 (아침 us 리포트 연동) → 전송 + 옵시디안 병합
+# 한국 시황 세션: 평일 07:00 KST (= 전일 22:00 UTC, 일~목) 기동
+# ⚠️ GitHub cron 지연(실측 40~55분) 흡수 버퍼 — capture.py가 07:55까지 대기 후 07:55~08:25 녹화
 name: kr-session
 
 on:
   schedule:
-    - cron: "55 22 * * 0-4"   # KST 월~금 07:55
+    - cron: "0 22 * * 0-4"    # KST 월~금 07:00 기동 (지연 흡수 버퍼 55분)
   workflow_dispatch:
     inputs:
       vod_url:
@@ -15,7 +15,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 130      # 방송시작 대기(최대 55분) + 녹화 30분 + 분석 여유
     steps:
       - uses: actions/checkout@v4
 

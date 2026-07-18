@@ -1,0 +1,102 @@
+{
+  "name": "3tv 리포트 → RaeVault 동기화",
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "평일 07:10 / 08:50",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "10 7 * * 1-5" },
+            { "field": "cronExpression", "expression": "50 8 * * 1-5" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "calcpath",
+      "name": "오늘 경로 계산",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 0],
+      "parameters": {
+        "jsCode": "// OWNER를 본인 GitHub 계정으로 수정하세요\nconst OWNER = \"vierzhen-del\";\nconst REPO = \"3tv-reports\";\nconst now = new Date(new Date().toLocaleString(\"en-US\", {timeZone: \"Asia/Seoul\"}));\nconst yyyy = String(now.getFullYear());\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst ymd = yyyy + mm + String(now.getDate()).padStart(2, \"0\");\nconst apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/3protv/${yyyy}/${mm}?ref=main`;\nreturn [{ json: { yyyy, mm, ymd, apiUrl } }];"
+      }
+    },
+    {
+      "id": "listfiles",
+      "name": "파일 목록 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 0],
+      "parameters": {
+        "url": "={{ $json.apiUrl }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer <N8N_GITHUB_PAT>" },
+            { "name": "Accept", "value": "application/vnd.github+json" },
+            { "name": "User-Agent", "value": "n8n-3tv-sync" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "filtertoday",
+      "name": "오늘 파일 필터",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 0],
+      "parameters": {
+        "jsCode": "const { yyyy, mm, ymd } = $('오늘 경로 계산').first().json;\nconst files = $input.all().map(i => i.json);\nconst today = files.filter(f => f.name && f.name.includes(ymd) && f.name.endsWith('.md'));\nreturn today.map(f => ({ json: {\n  name: f.name,\n  download_url: f.download_url,\n  target: `/root/obsidian/RaeVault/3protv/${yyyy}/${mm}/${f.name}`\n}}));"
+      }
+    },
+    {
+      "id": "download",
+      "name": "md 다운로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 0],
+      "parameters": {
+        "url": "={{ $json.download_url }}",
+        "options": {
+          "response": { "response": { "responseFormat": "file" } }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer <N8N_GITHUB_PAT>" },
+            { "name": "User-Agent", "value": "n8n-3tv-sync" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "writefile",
+      "name": "RaeVault에 저장",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [1000, 0],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('오늘 파일 필터').item.json.target }}",
+        "dataPropertyName": "data"
+      }
+    }
+  ],
+  "connections": {
+    "평일 07:10 / 08:50": { "main": [[{ "node": "오늘 경로 계산", "type": "main", "index": 0 }]] },
+    "오늘 경로 계산": { "main": [[{ "node": "파일 목록 조회", "type": "main", "index": 0 }]] },
+    "파일 목록 조회": { "main": [[{ "node": "오늘 파일 필터", "type": "main", "index": 0 }]] },
+    "오늘 파일 필터": { "main": [[{ "node": "md 다운로드", "type": "main", "index": 0 }]] },
+    "md 다운로드": { "main": [[{ "node": "RaeVault에 저장", "type": "main", "index": 0 }]] }
+  }
+}

@@ -74,11 +74,14 @@ kakao:
 
 obsidian:
   enabled: true
-  # 옵시디안 second brain 볼트 GitHub repo (예: "vierzhen-del/second-brain")
-  # 비워두면 옵시디안 아카이브를 건너뜀
+  # 리포트 중계용 private repo (예: "vierzhen-del/3tv-reports")
+  # 볼트(RaeVault)는 Syncthing(S9 마스터 ⇄ S26)으로 동기화되므로 GitHub repo가 아님.
+  # Actions는 여기에 md를 push하고, S9의 n8n 스케줄 워크플로가 이 repo에서
+  # fetch하여 RaeVault/3protv/에 저장 → Syncthing이 S26까지 전파 (docs/n8n_s9_sync.md)
+  # 비워두면 아카이브를 건너뜀
   vault_repo: ""
   vault_branch: "main"
-  base_path: "3protv"       # 볼트 내 저장 루트 → 3protv/YYYY/MM/파일.md
+  base_path: "3protv"       # repo/볼트 내 저장 루트 → 3protv/YYYY/MM/파일.md
 
 notion:
   enabled: false            # NOTION_API_KEY/NOTION_PARENT_ID 등록 후 true로
