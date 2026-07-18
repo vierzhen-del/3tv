@@ -5,17 +5,42 @@
 #   - 한국: 6자리 종목코드 (예: 005930)
 
 holdings:
-  - name: "SCHD"
-    ticker: "SCHD"
+  - name: "삼성전자"
+    ticker: "005930"
+    market: KR
+    aliases: ["삼전"]
+  - name: "SK하이닉스"
+    ticker: "000660"
+    market: KR
+    aliases: ["하이닉스", "SK Hynix"]
+  - name: "SOXL"
+    ticker: "SOXL"
     market: US
-    aliases: ["슈드", "미국배당다우존스"]
-  # - name: "삼성전자"
-  #   ticker: "005930"
-  #   market: KR
-  #   aliases: ["삼전"]
+    aliases: ["반도체 3배 레버리지"]
+  - name: "마이크론"
+    ticker: "MU"
+    market: US
+    aliases: ["MU", "Micron"]
+  - name: "나스닥지수"
+    ticker: "^IXIC"
+    market: US
+    aliases: ["나스닥", "미국나스닥", "NASDAQ"]
+  - name: "S&P500지수"
+    ticker: "^GSPC"
+    market: US
+    aliases: ["S&P500", "미국S&P500", "SPX"]
+  - name: "샌디스크"
+    ticker: "SNDK"
+    market: US
+    aliases: ["SanDisk"]
+  - name: "스페이스X"
+    ticker: "SPACEX"
+    market: US
+    aliases: ["SpaceX", "스페이스엑스"]
+    # 비상장이라 yfinance 시세 조회는 항상 실패(null) — 방송 언급 체크만 동작
+  - name: "테슬라"
+    ticker: "TSLA"
+    market: US
+    aliases: ["Tesla"]
 
 watchlist: []
-  # - name: "엔비디아"
-  #   ticker: "NVDA"
-  #   market: US
-  #   aliases: ["NVIDIA"]
