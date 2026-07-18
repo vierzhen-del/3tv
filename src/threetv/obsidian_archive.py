@@ -35,15 +35,26 @@ def _clone_vault(obsidian_cfg: dict) -> Path | None:
     branch = obsidian_cfg.get("vault_branch", "main")
     if VAULT_TMP.exists():
         shutil.rmtree(VAULT_TMP)
+    url = _vault_url(vault_repo)
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", branch,
-             _vault_url(vault_repo), str(VAULT_TMP)],
+            ["git", "clone", "--depth", "1", "--branch", branch, url, str(VAULT_TMP)],
             check=True, capture_output=True, timeout=300,
         )
         return VAULT_TMP
     except subprocess.CalledProcessError as e:
-        log.error("볼트 clone 실패: %s", (e.stderr or b"").decode()[-300:])
+        stderr = (e.stderr or b"").decode()
+        if "Remote branch" in stderr and "not found" in stderr:
+            # 커밋이 하나도 없는 완전히 빈 저장소 — 로컬에서 새로 초기화해
+            # 최초 커밋·push 시 branch가 원격에 생성되도록 한다
+            log.info("볼트 repo가 비어있음 — 최초 커밋으로 %s 브랜치를 새로 만듦", branch)
+            VAULT_TMP.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-b", branch, str(VAULT_TMP)],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(VAULT_TMP), "remote", "add", "origin", url],
+                           check=True, capture_output=True)
+            return VAULT_TMP
+        log.error("볼트 clone 실패: %s", stderr[-300:])
         return None
 
 
@@ -148,7 +159,10 @@ def archive_report(
         if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
             log.error("볼트 커밋 실패: %s", commit.stderr[-300:])
             return False
-        push = subprocess.run(["git", "-C", str(vault), "push"],
+        branch = obsidian_cfg.get("vault_branch", "main")
+        # -u: 빈 저장소에서 git init으로 새로 만든 경우 원격에 branch가 없어
+        # upstream 추적이 없으므로 매번 명시적으로 지정 (기존 브랜치엔 무해)
+        push = subprocess.run(["git", "-C", str(vault), "push", "-u", "origin", branch],
                               capture_output=True, text=True, timeout=120)
         if push.returncode != 0:
             log.error("볼트 push 실패: %s", push.stderr[-300:])
