@@ -27,7 +27,12 @@
   실전 런(월요일 새벽) 또는 VOD 테스트 로그에서 `KRX 로그인 완료.` 문자열로 확인—
   API로 Secrets 값 자체는 조회 불가하므로 실행 로그가 유일한 검증 수단.
 - **YOUTUBE_COOKIES: 사용자 등록 완료.**
-- **미등록(사용자 작업 잔여)**: KAKAO_*, n8n용 PAT.
+- **KAKAO_REST_API_KEY/KAKAO_REFRESH_TOKEN 등록 완료(2026-07-19)** — `scripts/kakao_get_token.py`
+  로컬 발급(Client Secret 미사용 설정) 후 Secrets 등록. `settings.yaml`의 `kakao.enabled: true`가
+  이미 켜져 있어 코드 변경 없이 다음 실행부터 카카오 "나에게 보내기"로도 리포트 발송.
+  refresh token 유효기간 약 2개월 — 만료 임박 시 파이프라인이 자동 갱신 시도(GH_PAT 필요),
+  실패하면 텔레그램으로 재발급 안내가 온다.
+- **미등록(사용자 작업 잔여)**: n8n용 PAT (3tv-reports Contents:Read 전용).
 
 ## GitHub cron 지연 (실측 40~55분)
 
