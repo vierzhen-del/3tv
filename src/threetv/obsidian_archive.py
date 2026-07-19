@@ -12,7 +12,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from .common import REPO_ROOT, env, log, now_kst
+from .common import REPO_ROOT, env_token, log, now_kst
 
 VAULT_TMP = REPO_ROOT / ".vault_tmp"
 
@@ -21,7 +21,7 @@ KR_MARKER = "<!-- 3tv:kr -->"
 
 
 def _vault_url(vault_repo: str) -> str:
-    pat = env("GH_PAT")
+    pat = env_token("GH_PAT")
     if pat:
         return f"https://x-access-token:{pat}@github.com/{vault_repo}.git"
     return f"https://github.com/{vault_repo}.git"

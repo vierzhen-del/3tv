@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import requests
 
-from .common import env, log, now_kst
+from .common import env_token, log, now_kst
 
 NOTION_VERSION = "2022-06-28"
 
@@ -38,8 +38,8 @@ def _md_to_blocks(markdown: str) -> list[dict]:
 
 
 def archive_to_notion(title_keyword: str, markdown_report: str) -> bool:
-    api_key = env("NOTION_API_KEY")
-    parent_id = env("NOTION_PARENT_ID")
+    api_key = env_token("NOTION_API_KEY")
+    parent_id = env_token("NOTION_PARENT_ID")
     if not api_key or not parent_id:
         log.info("NOTION_API_KEY/NOTION_PARENT_ID 미설정 — 노션 저장 생략")
         return False

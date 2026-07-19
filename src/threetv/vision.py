@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .common import env, log
+from .common import env_token, log
 from .frames import FrameInfo
 
 BATCH_SIZE = 8
@@ -48,7 +48,7 @@ type 판정도 본 자료 기준으로 하세요 (배너가 있어도 본 자료
 def _client():
     from google import genai
 
-    api_key = env("GEMINI_API_KEY")
+    api_key = env_token("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY 미설정")
     return genai.Client(api_key=api_key)

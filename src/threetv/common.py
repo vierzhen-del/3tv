@@ -101,3 +101,11 @@ def parse_duration(s: str) -> int:
 
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def env_token(name: str, default: str = "") -> str:
+    """단일 토큰(API 키·chat id 등) 전용 — 앞뒤 공백은 물론 복사·붙여넣기로
+    섞여 들어간 내부 개행(\\r\\n)까지 제거한다. HTTP 헤더 값으로 그대로
+    쓰이는 값에 개행이 남아있으면 'Illegal header value' 오류가 난다.
+    YOUTUBE_COOKIES처럼 여러 줄이 의미 있는 값에는 절대 쓰지 말 것 — env()를 쓴다."""
+    return env(name, default).replace("\r", "").replace("\n", "")

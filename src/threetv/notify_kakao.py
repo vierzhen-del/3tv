@@ -12,15 +12,15 @@ import json
 
 import requests
 
-from .common import env, log
+from .common import env_token, log
 
 TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 
 
 def _refresh_access_token() -> str | None:
-    rest_key = env("KAKAO_REST_API_KEY")
-    refresh = env("KAKAO_REFRESH_TOKEN")
+    rest_key = env_token("KAKAO_REST_API_KEY")
+    refresh = env_token("KAKAO_REFRESH_TOKEN")
     if not rest_key or not refresh:
         log.info("KAKAO_REST_API_KEY/KAKAO_REFRESH_TOKEN 미설정 — 카카오 전송 생략")
         return None
@@ -48,7 +48,7 @@ def _refresh_access_token() -> str | None:
 
 def _update_github_secret(name: str, value: str) -> None:
     """GitHub Actions repo secret 자동 갱신 (GH_PAT + GITHUB_REPOSITORY 필요)."""
-    pat = env("GH_PAT")
+    pat = env_token("GH_PAT")
     repo = env("GITHUB_REPOSITORY")  # Actions가 자동 주입 (owner/repo)
     if not pat or not repo:
         log.warning("새 카카오 refresh token 발급됨 — GH_PAT 미설정으로 자동 갱신 불가. "

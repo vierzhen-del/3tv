@@ -10,13 +10,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .common import env, log, now_kst
+from .common import env_token, log, now_kst
 
 
 def _client():
     import anthropic
 
-    api_key = env("ANTHROPIC_API_KEY")
+    api_key = env_token("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY 미설정")
     return anthropic.Anthropic(api_key=api_key)

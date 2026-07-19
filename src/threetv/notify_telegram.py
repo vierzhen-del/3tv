@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import requests
 
-from .common import env, log
+from .common import env_token, log
 
 
 def send_telegram(text: str, max_len: int = 4000) -> bool:
-    token = env("TELEGRAM_BOT_TOKEN")
+    token = env_token("TELEGRAM_BOT_TOKEN")
     # 기존 v28 .env 호환: TELEGRAM_CHAT_ID 없으면 TELEGRAM_NOTIFY_CHANNEL 사용
-    chat_id = env("TELEGRAM_CHAT_ID") or env("TELEGRAM_NOTIFY_CHANNEL")
+    chat_id = env_token("TELEGRAM_CHAT_ID") or env_token("TELEGRAM_NOTIFY_CHANNEL")
     if not token or not chat_id:
         log.warning("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 미설정 — 텔레그램 전송 생략")
         return False
