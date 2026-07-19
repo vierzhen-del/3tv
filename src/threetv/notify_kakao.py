@@ -12,7 +12,7 @@ import json
 
 import requests
 
-from .common import env_token, log
+from .common import env, env_token, log
 
 TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
