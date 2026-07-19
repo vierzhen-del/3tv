@@ -11,6 +11,18 @@ on:
         description: "라이브 대신 사용할 VOD URL (테스트/복구용, 비우면 라이브 캡처)"
         required: false
         default: ""
+      trim_start:
+        description: "구간 트리밍 시작 (MM:SS, vod_url과 함께만 사용, 사전검토용)"
+        required: false
+        default: ""
+      trim_duration:
+        description: "구간 트리밍 길이 (MM:SS, trim_start와 함께 사용)"
+        required: false
+        default: ""
+      output_tag:
+        description: "artifact 이름 구분용 태그 (예: full, trim) — 여러 실행 비교 시 유용"
+        required: false
+        default: ""
 
 jobs:
   run:
@@ -44,17 +56,24 @@ jobs:
           NOTION_PARENT_ID: ${{ secrets.NOTION_PARENT_ID }}
         run: |
           VOD="${{ github.event.inputs.vod_url }}"
-          if [ -n "$VOD" ]; then
-            python -m threetv.main --session kr --vod-url "$VOD"
-          else
+          TRIM_START="${{ github.event.inputs.trim_start }}"
+          TRIM_DURATION="${{ github.event.inputs.trim_duration }}"
+          if [ -z "$VOD" ]; then
             python -m threetv.main --session kr
+          elif [ -n "$TRIM_START" ]; then
+            python -m threetv.main --session kr --vod-url "$VOD" \
+              --trim-start "$TRIM_START" --trim-duration "$TRIM_DURATION" \
+              --skip-notify --skip-archive
+          else
+            python -m threetv.main --session kr --vod-url "$VOD" \
+              --skip-notify --skip-archive
           fi
 
       - name: Upload analysis artifacts (debug)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kr-session-${{ github.run_id }}
+          name: kr-session-${{ github.event.inputs.output_tag || 'run' }}-${{ github.run_id }}
           path: |
             output/**/vision_results.json
             output/**/transcript.txt

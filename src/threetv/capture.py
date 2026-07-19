@@ -116,8 +116,11 @@ def download_vod(
     영상 전체를 받은 뒤 자르는 방식이 아니라 필요한 구간만 다운로드한다.
     """
     cookies = _cookies_file()
+    # 마지막 bestvideo+bestaudio/best는 무조건 폴백 — 특정 영상에 480p 제약을
+    # 만족하는 포맷이 없어 "Requested format is not available"로 죽는 것을 방지
+    # (해상도 상한을 못 지키더라도 다운로드 자체는 성공시키는 게 우선)
     cmd = _ytdlp_base(cookies) + [
-        "-f", f"best[height<={resolution}]/bv*[height<={resolution}]+ba/best",
+        "-f", f"best[height<={resolution}]/bv*[height<={resolution}]+ba/bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",
     ]
     if start_sec is not None and duration_sec is not None:
