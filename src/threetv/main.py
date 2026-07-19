@@ -144,8 +144,14 @@ def run(args: argparse.Namespace) -> int:
         log.warning("자료화면 후보가 0장 — 전사만으로 리포트 진행")
 
     # 3. Gemini 비전 분석 (분류 + 텍스트/그래프 추출; 배너 광고는 프롬프트에서 무시)
-    all_vision = analyze_frames(selected, settings["models"]["gemini"], out_dir) \
-        if selected else []
+    #    무료 티어 할당량(20요청/일) 대응: 배치 크기·요청 상한·429 폴백은 settings로 제어
+    frames_cfg = settings["frames"]
+    all_vision = analyze_frames(
+        selected, settings["models"]["gemini"], out_dir,
+        batch_size=frames_cfg.get("vision_batch_size", 16),
+        max_requests=frames_cfg.get("vision_max_requests", 6),
+        fallback_model=settings["models"].get("gemini_fallback", ""),
+    ) if selected else []
 
     # 4. Whisper 음성 전사
     transcript = transcribe(video, out_dir, settings["models"]["whisper"])

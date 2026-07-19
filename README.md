@@ -54,6 +54,13 @@ capture (yt-dlp+ffmpeg 라이브 녹화, 480p)
 > 3. Permissions: `3tv`에는 **Secrets: Read and write**만, `3tv-reports`에는 **Contents: Read and write**만 부여 (그 외 전부 No access)
 > 4. 위 두 저장소 외에는 접근 권한이 전혀 없으므로, 유출되어도 피해 범위가 이 두 repo로 한정됩니다
 
+> 💡 **Gemini 무료 티어 할당량 주의**: 무료 키는 `gemini-2.5-flash` 기준 **하루 20요청** 제한이 있습니다.
+> 이 파이프라인은 그 안에서 돌도록 예산 설계되어 있습니다 — 세션당 최대 4요청(64프레임 ÷ 16장/배치),
+> us+kr 하루 운영 최대 8요청, 나머지는 재시도·수동 테스트 여유분. 실패한 요청도 할당량을 소모하므로
+> 같은 날 테스트를 반복하면 한도에 걸릴 수 있고, 이때는 남은 배치가 `gemini-2.5-flash-lite`(별도 할당량
+> 버킷)로 자동 폴백된 뒤 그마저 소진되면 부분 결과로 진행됩니다. 유료 결제를 활성화하면 이 제약이
+> 사실상 사라지며, `config/settings.yaml`의 `frames.vision_*` 값을 상향해도 됩니다.
+
 ### 2. 유튜브 쿠키 (권장)
 
 GitHub Actions 같은 데이터센터 IP는 유튜브가 yt-dlp 접근을 차단할 수 있습니다.

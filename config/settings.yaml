@@ -42,10 +42,18 @@ frames:
   white_sat_max: 45         # HSV S 채널 최대값 (0~255)
   white_ratio_min: 0.35     # 프레임 내 흰 픽셀 비율 임계치
   phash_distance: 6         # perceptual hash 거리 이하 → 중복으로 제거
-  max_frames_to_vision: 80  # Gemini로 보낼 최대 프레임 수 (비용 상한)
+  # ── Gemini 무료 티어 할당량 예산 (gemini-2.5-flash: 20요청/일) ──
+  # 64프레임 ÷ 16장/배치 = 세션당 최대 4요청 → us+kr 하루 운영 최대 8요청.
+  # 나머지 12요청은 재시도·수동 테스트용 여유분. 유료 전환 시 상향 가능.
+  max_frames_to_vision: 64  # Gemini로 보낼 최대 프레임 수
+  vision_batch_size: 16     # 요청 1회당 이미지 수 (클수록 요청 수 절약)
+  vision_max_requests: 6    # 실행 1회당 총 요청 상한 (재시도 포함, 폭주 방지)
 
 models:
   gemini: "gemini-2.5-flash"
+  # 429(일일 할당량 소진) 시 남은 배치를 이 모델로 전환 — flash-lite는 무료 티어
+  # 일일 할당량 버킷이 별도라 전멸을 막아줌. 비워두면 폴백 없이 즉시 중단.
+  gemini_fallback: "gemini-2.5-flash-lite"
   claude: "claude-sonnet-5"
   whisper: "small"          # faster-whisper 모델 크기 (tiny/base/small/medium)
 

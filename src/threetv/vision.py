@@ -4,6 +4,12 @@
 - type: 자료화면 / 스튜디오 / 광고 / 기타  (광고·배경화면은 최종 분석에서 제외)
 - 추출 텍스트, 언급 종목, 수치, 그래프 설명
 을 JSON으로 받는다.
+
+무료 티어 할당량(gemini-2.5-flash 기준 20요청/일) 대응:
+- 배치 크기·실행당 요청 상한은 settings.yaml frames.vision_batch_size /
+  vision_max_requests 로 제어 (운영 2세션 합산이 한도의 절반 이하가 되도록)
+- 429(RESOURCE_EXHAUSTED) 발생 시 남은 배치 전송을 즉시 중단하고 부분 결과로 진행
+  (폴백 모델이 설정되어 있으면 먼저 폴백으로 전환해 계속 시도)
 """
 from __future__ import annotations
 
@@ -12,8 +18,6 @@ from pathlib import Path
 
 from .common import env_token, log
 from .frames import FrameInfo
-
-BATCH_SIZE = 8
 
 PROMPT = """당신은 한국 경제방송(삼프로TV) 화면 분석 전문가입니다.
 첨부된 이미지들은 아침 시황 방송에서 10초 간격으로 캡처한 프레임입니다.
@@ -65,15 +69,40 @@ def _parse_json_array(text: str) -> list[dict]:
     return json.loads(text[start : end + 1])
 
 
-def analyze_frames(frames: list[FrameInfo], model: str, out_dir: Path) -> list[dict]:
-    """프레임 배치를 Gemini로 분석. 프레임별 결과 dict 리스트 반환."""
+def _is_quota_error(e: Exception) -> bool:
+    s = str(e)
+    return "RESOURCE_EXHAUSTED" in s or "429" in s
+
+
+def analyze_frames(
+    frames: list[FrameInfo],
+    model: str,
+    out_dir: Path,
+    batch_size: int = 16,
+    max_requests: int = 6,
+    fallback_model: str = "",
+) -> list[dict]:
+    """프레임 배치를 Gemini로 분석. 프레임별 결과 dict 리스트 반환.
+
+    - max_requests: 이 실행에서 보낼 총 요청 수 상한 (재시도 포함) — 무료 티어
+      일일 할당량 폭주 방지 안전벨트
+    - 429/RESOURCE_EXHAUSTED: fallback_model이 있으면 남은 배치를 폴백으로 전환,
+      폴백까지 소진되면 즉시 중단하고 그때까지의 부분 결과로 진행
+    - 그 외 실패(파싱 오류 등): 배치당 1회만 재시도
+    """
     from google.genai import types
 
     client = _client()
     results: list[dict] = []
+    active_model = model
+    n_requests = 0
+    aborted = False
 
-    for batch_start in range(0, len(frames), BATCH_SIZE):
-        batch = frames[batch_start : batch_start + BATCH_SIZE]
+    for batch_start in range(0, len(frames), batch_size):
+        if aborted:
+            break
+        batch = frames[batch_start : batch_start + batch_size]
+        batch_no = batch_start // batch_size
         parts: list = [PROMPT]
         for fi in batch:
             parts.append(
@@ -81,15 +110,47 @@ def analyze_frames(frames: list[FrameInfo], model: str, out_dir: Path) -> list[d
                     data=fi.path.read_bytes(), mime_type="image/jpeg"
                 )
             )
-        try:
-            resp = client.models.generate_content(
-                model=model,
-                contents=parts,
-                config=types.GenerateContentConfig(temperature=0.1),
-            )
-            parsed = _parse_json_array(resp.text or "")
-        except Exception as e:  # 배치 하나 실패해도 전체는 계속
-            log.warning("Gemini 배치 %d 분석 실패: %s", batch_start // BATCH_SIZE, e)
+
+        parsed: list[dict] | None = None
+        attempts_left = 2  # 최초 1회 + 재시도 1회
+        while attempts_left > 0 and not aborted:
+            if n_requests >= max_requests:
+                log.warning(
+                    "Gemini 요청 예산(%d회) 소진 — 배치 %d 이후 생략, 부분 결과로 진행",
+                    max_requests, batch_no,
+                )
+                aborted = True
+                break
+            n_requests += 1
+            try:
+                resp = client.models.generate_content(
+                    model=active_model,
+                    contents=parts,
+                    config=types.GenerateContentConfig(temperature=0.1),
+                )
+                parsed = _parse_json_array(resp.text or "")
+                break
+            except Exception as e:
+                if _is_quota_error(e):
+                    if fallback_model and active_model != fallback_model:
+                        log.warning(
+                            "Gemini 할당량 소진(%s) → 폴백 모델 %s로 전환해 재시도",
+                            active_model, fallback_model,
+                        )
+                        active_model = fallback_model
+                        continue  # 같은 배치를 폴백으로 즉시 재시도 (재시도 횟수 미소모)
+                    log.warning(
+                        "Gemini 할당량 소진 — 남은 배치 분석 중단, 부분 결과로 진행: %s", e
+                    )
+                    aborted = True
+                    break
+                attempts_left -= 1
+                if attempts_left > 0:
+                    log.warning("Gemini 배치 %d 실패, 1회 재시도: %s", batch_no, e)
+                else:
+                    log.warning("Gemini 배치 %d 분석 실패(재시도 포함): %s", batch_no, e)
+
+        if parsed is None:
             continue
 
         for item in parsed:
@@ -101,8 +162,8 @@ def analyze_frames(frames: list[FrameInfo], model: str, out_dir: Path) -> list[d
             item["timestamp_sec"] = fi.timestamp_sec
             results.append(item)
         log.info(
-            "Gemini 배치 %d 완료 (%d/%d 프레임 분석됨)",
-            batch_start // BATCH_SIZE, len(results), len(frames),
+            "Gemini 배치 %d 완료 (%d/%d 프레임 분석됨, 요청 %d/%d회)",
+            batch_no, len(results), len(frames), n_requests, max_requests,
         )
 
     n_material = sum(1 for r in results if r.get("type") == "자료화면")
