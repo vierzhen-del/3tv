@@ -1,9 +1,14 @@
-"""Claude 기반 종목 추출 + 최종 시황 리포트 생성.
+"""종목 추출 + 최종 시황 리포트 생성 (Claude 우선, Gemini 폴백).
 
 1단계: 자료화면 추출물 + 전사 텍스트에서 언급 종목 목록 추출 (티커 추정 포함)
         → market.py가 실시세로 검증
 2단계: 화면 추출물 + 전사 + 검증된 시세 + 보유종목을 종합해
         텔레그램용 요약과 옵시디안용 마크다운 리포트 생성
+
+무과금 운영 대응: Anthropic 크레딧 소진(400)·키 미설정 시 Gemini로 자동 폴백해
+리포트가 끊기지 않게 한다 (2026-07-19 실측: 크레딧 부족으로 스케줄 런 전면 실패).
+폴백은 세션당 Gemini 요청을 최대 2회(추출 1 + 리포트 1) 추가 소모하므로
+frames.vision_max_requests 예산(하루 20요청) 안에서 여유분으로 흡수된다.
 """
 from __future__ import annotations
 
@@ -43,6 +48,51 @@ def _call_claude(model: str, prompt: str, max_tokens: int = 8000) -> str:
     return "".join(b.text for b in resp.content if b.type == "text")
 
 
+def _call_gemini(model: str, prompt: str, max_tokens: int = 8000) -> str:
+    from google import genai
+    from google.genai import types
+
+    api_key = env_token("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY 미설정")
+    client = genai.Client(api_key=api_key)
+    resp = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.2, max_output_tokens=max_tokens
+        ),
+    )
+    return resp.text or ""
+
+
+def _call_llm(models: dict, prompt: str, max_tokens: int = 8000) -> str:
+    """Claude 우선 호출, 실패 시 Gemini 폴백.
+
+    - ANTHROPIC_API_KEY 미설정: Claude를 건너뛰고 바로 Gemini
+    - Claude 호출 실패(크레딧 소진 400 등): Gemini로 폴백
+    - Gemini 기본 모델 실패: models.gemini_fallback으로 1회 더 시도
+    """
+    claude_model = models.get("claude", "")
+    if claude_model and env_token("ANTHROPIC_API_KEY"):
+        try:
+            return _call_claude(claude_model, prompt, max_tokens)
+        except Exception as e:
+            log.warning("Claude 호출 실패 → Gemini 폴백: %s", e)
+    else:
+        log.warning("ANTHROPIC_API_KEY 미설정 → Gemini로 진행")
+
+    gemini_model = models.get("gemini", "gemini-2.5-flash")
+    try:
+        return _call_gemini(gemini_model, prompt, max_tokens)
+    except Exception as e:
+        fallback = models.get("gemini_fallback", "")
+        if not fallback or fallback == gemini_model:
+            raise
+        log.warning("Gemini %s 실패 → %s 재시도: %s", gemini_model, fallback, e)
+        return _call_gemini(fallback, prompt, max_tokens)
+
+
 def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> str:
     """자료화면 추출물을 시간순 텍스트로 압축."""
     lines = []
@@ -63,7 +113,7 @@ def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> st
 
 
 def extract_mentions(
-    model: str, vision_results: list[dict], transcript: str
+    models: dict, vision_results: list[dict], transcript: str
 ) -> list[dict]:
     """방송에서 언급된 종목 목록 추출 → [{name, market, ticker_guess, context}]."""
     prompt = f"""다음은 삼프로TV 아침 시황 방송의 (A) 자료화면 추출 텍스트와 (B) 음성 전사입니다.
@@ -83,7 +133,7 @@ JSON 객체로만 답하세요:
 (B) 음성 전사:
 {transcript[:40000]}"""
     try:
-        data = _parse_json_obj(_call_claude(model, prompt, max_tokens=4000))
+        data = _parse_json_obj(_call_llm(models, prompt, max_tokens=4000))
         mentions = data.get("mentions", [])
         log.info("언급 종목 추출: %d개", len(mentions))
         return mentions
@@ -108,7 +158,6 @@ def generate_report(
 
     반환: {title_keyword, telegram_text, markdown_report, holdings_mentioned}
     """
-    model = settings["models"]["claude"]
     label = settings["sessions"][session]["label"]
     disclaimer = settings["report"]["disclaimer"]
     today = now_kst().strftime("%Y-%m-%d (%a)")
@@ -172,7 +221,7 @@ JSON 객체로만 답하세요:
 [음성 전사]
 {transcript[:40000]}{us_ctx}"""
 
-    data = _parse_json_obj(_call_claude(model, prompt, max_tokens=12000))
+    data = _parse_json_obj(_call_llm(settings["models"], prompt, max_tokens=12000))
     for key in ("title_keyword", "telegram_text", "markdown_report"):
         if not data.get(key):
             raise RuntimeError(f"리포트 생성 결과에 {key} 누락")

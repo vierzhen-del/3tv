@@ -166,7 +166,7 @@ def run(args: argparse.Namespace) -> int:
     log.info("최종 분석 자료화면: %d장", len(vision_results))
 
     # 5. 종목 추출 → 실시세 검증
-    mentions = extract_mentions(settings["models"]["claude"], vision_results, transcript)
+    mentions = extract_mentions(settings["models"], vision_results, transcript)
     verified = market.verify_mentions(mentions)
     indices = market.fetch_indices(settings["market"]["indices"])
     holdings_data = load_holdings()
