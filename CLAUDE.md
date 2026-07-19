@@ -20,11 +20,14 @@
   단순 try/폴백이 아니라 명시적 플래그로 전환(7/19). 크레딧을 충전하면 이 플래그를
   false로 바꾸는 것만으로 코드 변경 없이 Claude가 다시 primary가 된다.
   14fiance의 `CAPTURE_CLAUDE_API_DISABLED`와 동일 계열의 조치다.
-- **KRX_ID/KRX_PW 미설정** — pykrx가 로그인 경고를 남기지만 market 단계는 실패를
-  삼키고 quote=null로 진행하므로 치명적이지 않다(리포트에 "방송 화면 기준" 표기로 대체).
-  국내 시세 검증 정확도를 올리려면 KRX 계정 secrets 등록.
-- **미등록(사용자 작업 잔여)**: YOUTUBE_COOKIES(권장), KAKAO_*, n8n용 PAT.
-  holdings.yaml은 SCHD 플레이스홀더 상태.
+- **KRX_ID/KRX_PW 등록 완료(2026-07-19)** — data.krx.co.kr 회원 로그인 아이디·비밀번호를
+  GitHub Secrets로 등록. pykrx의 `KRXSession`이 1시간 세션 쿠키로 인증 요청을 보내
+  국내 시세 조회 신뢰도가 올라간다(미등록 시에도 익명 요청으로 폴백해 동작은 하지만
+  GitHub Actions 공유 IP는 차단·제한 가능성이 더 높음). 실제 로그인 성공 여부는 다음
+  실전 런(월요일 새벽) 또는 VOD 테스트 로그에서 `KRX 로그인 완료.` 문자열로 확인—
+  API로 Secrets 값 자체는 조회 불가하므로 실행 로그가 유일한 검증 수단.
+- **YOUTUBE_COOKIES: 사용자 등록 완료.**
+- **미등록(사용자 작업 잔여)**: KAKAO_*, n8n용 PAT.
 
 ## GitHub cron 지연 (실측 40~55분)
 
