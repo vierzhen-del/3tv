@@ -1,0 +1,43 @@
+# 임시 진단용 워크플로 — yt-dlp가 특정 URL에서 왜 실패하는지 상세 로그 확인
+# 원인 파악 후 삭제 예정
+name: debug-ytdlp
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "진단할 URL"
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
+
+      - name: Cookies 파일 준비
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          if [ -n "$YOUTUBE_COOKIES" ]; then
+            echo "$YOUTUBE_COOKIES" > /tmp/cookies.txt
+            echo "cookies 파일 준비됨 ($(wc -l < /tmp/cookies.txt) 줄)"
+          else
+            echo "YOUTUBE_COOKIES 미설정"
+          fi
+
+      - name: yt-dlp 상세 진단 (쿠키 미사용)
+        run: |
+          echo "=== -F (포맷 목록, 쿠키없음) ==="
+          yt-dlp --no-warnings -v -F "${{ github.event.inputs.url }}" 2>&1 | tail -60 || true
+
+      - name: yt-dlp 상세 진단 (쿠키 사용)
+        run: |
+          echo "=== -F (포맷 목록, 쿠키사용) ==="
+          if [ -f /tmp/cookies.txt ]; then
+            yt-dlp --no-warnings -v --cookies /tmp/cookies.txt -F "${{ github.event.inputs.url }}" 2>&1 | tail -60 || true
+          else
+            echo "쿠키 파일 없음, 스킵"
+          fi
