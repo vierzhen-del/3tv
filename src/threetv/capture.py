@@ -37,6 +37,11 @@ def _cookies_file() -> Path | None:
 
 def _ytdlp_base(cookies: Path | None) -> list[str]:
     cmd = ["yt-dlp", "--no-warnings", "--quiet"]
+    # YouTube의 "n challenge"(안티봇 서명 챌린지)를 풀 solver 스크립트를 GitHub에서
+    # 받아오도록 허용 — 이게 없으면 JS 런타임(Deno)이 있어도 storyboard 썸네일
+    # 포맷만 노출되고 실제 video/audio 포맷은 전부 숨겨져 다운로드가 실패한다
+    # (CI 환경엔 Deno 설치가 별도로 필요 — 워크플로의 "Install Deno" 스텝 참고)
+    cmd += ["--remote-components", "ejs:github"]
     if cookies:
         cmd += ["--cookies", str(cookies)]
     return cmd
