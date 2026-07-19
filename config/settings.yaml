@@ -55,6 +55,10 @@ models:
   # 일일 할당량 버킷이 별도라 전멸을 막아줌. 비워두면 폴백 없이 즉시 중단.
   gemini_fallback: "gemini-2.5-flash-lite"
   claude: "claude-sonnet-5"
+  # 2026-07-19 사용자 확정: 크레딧 충전 없이 Gemini 전용 운영. Claude 호출 자체를
+  # 생략해 매 실행 실패 API 호출을 없앤다. 크레딧 충전 시 false로 바꾸면 Claude가
+  # 자동으로 primary 복귀 (report.py _call_llm 참고, 14fiance CAPTURE_CLAUDE_API_DISABLED와 동일 계열)
+  claude_disabled: true
   whisper: "small"          # faster-whisper 모델 크기 (tiny/base/small/medium)
 
 market:

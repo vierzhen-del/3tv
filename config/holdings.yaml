@@ -42,5 +42,17 @@ holdings:
     ticker: "TSLA"
     market: US
     aliases: ["Tesla"]
+  - name: "엔비디아"
+    ticker: "NVDA"
+    market: US
+    aliases: ["Nvidia", "NVDA"]
+  - name: "애플"
+    ticker: "AAPL"
+    market: US
+    aliases: ["Apple", "AAPL"]
+  - name: "구글"
+    ticker: "GOOGL"
+    market: US
+    aliases: ["Google", "알파벳", "Alphabet", "GOOGL"]
 
 watchlist: []

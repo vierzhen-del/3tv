@@ -67,14 +67,20 @@ def _call_gemini(model: str, prompt: str, max_tokens: int = 8000) -> str:
 
 
 def _call_llm(models: dict, prompt: str, max_tokens: int = 8000) -> str:
-    """Claude 우선 호출, 실패 시 Gemini 폴백.
+    """Gemini 확정 운영 + Claude 크레딧 충전 시 자동 복귀.
 
-    - ANTHROPIC_API_KEY 미설정: Claude를 건너뛰고 바로 Gemini
-    - Claude 호출 실패(크레딧 소진 400 등): Gemini로 폴백
+    - models.claude_disabled=true (기본값, 2026-07-19 사용자 확정: 무과금 = Gemini 전용):
+      Claude 호출 자체를 생략하고 바로 Gemini — 매 실행 실패 API 호출/로그 낭비 방지.
+      크레딧을 충전하면 settings.yaml에서 이 플래그만 false로 바꾸면 코드 변경 없이
+      Claude가 다시 primary가 된다 (14fiance CAPTURE_CLAUDE_API_DISABLED와 동일 계열).
+    - claude_disabled=false인데 ANTHROPIC_API_KEY 미설정/호출 실패(크레딧 소진 400 등):
+      Gemini로 폴백
     - Gemini 기본 모델 실패: models.gemini_fallback으로 1회 더 시도
     """
     claude_model = models.get("claude", "")
-    if claude_model and env_token("ANTHROPIC_API_KEY"):
+    if models.get("claude_disabled"):
+        log.info("claude_disabled=true → Gemini로 진행 (Claude 호출 생략)")
+    elif claude_model and env_token("ANTHROPIC_API_KEY"):
         try:
             return _call_claude(claude_model, prompt, max_tokens)
         except Exception as e:

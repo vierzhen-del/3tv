@@ -13,11 +13,13 @@
 
 - **GEMINI_API_KEY / ANTHROPIC_API_KEY / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: 등록 완료.**
   (노션 7/18 미결점검의 "Secrets 전부 미등록"은 구정보 — 7/19 실행 로그로 등록 확인됨.)
-- **ANTHROPIC_API_KEY는 크레딧 0** — 7/19 실행 3회가 리포트 생성 단계에서
-  400(`credit balance too low`)으로 실패했다. 이 때문에 `report.py`에 **Gemini 자동
-  폴백**이 있다(Claude 실패/키 미설정 → `models.gemini` → `models.gemini_fallback`).
-  크레딧을 충전하면 코드 변경 없이 다음 실행부터 Claude가 다시 primary가 된다.
-  14fiance의 "무과금 = Gemini 전용" 원칙과 같은 계열의 조치다.
+- **ANTHROPIC_API_KEY는 크레딧 0, 2026-07-19 사용자 확정: 충전 없이 Gemini 전용 운영.**
+  `config/settings.yaml`의 `models.claude_disabled: true`가 Claude 호출 자체를 생략하고
+  바로 Gemini(`models.gemini` → 실패 시 `models.gemini_fallback`)로 리포트를 생성한다
+  (`report.py`의 `_call_llm`). 매 실행마다 실패하는 Anthropic API 호출/로그를 없애기 위해
+  단순 try/폴백이 아니라 명시적 플래그로 전환(7/19). 크레딧을 충전하면 이 플래그를
+  false로 바꾸는 것만으로 코드 변경 없이 Claude가 다시 primary가 된다.
+  14fiance의 `CAPTURE_CLAUDE_API_DISABLED`와 동일 계열의 조치다.
 - **KRX_ID/KRX_PW 미설정** — pykrx가 로그인 경고를 남기지만 market 단계는 실패를
   삼키고 quote=null로 진행하므로 치명적이지 않다(리포트에 "방송 화면 기준" 표기로 대체).
   국내 시세 검증 정확도를 올리려면 KRX 계정 secrets 등록.
