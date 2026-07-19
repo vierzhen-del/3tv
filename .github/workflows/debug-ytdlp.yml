@@ -14,8 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Install yt-dlp
         run: pip install -U yt-dlp
+
+      - name: JS 런타임 확인
+        run: node --version && which node
 
       - name: Cookies 파일 준비
         env:
