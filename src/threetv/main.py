@@ -145,13 +145,20 @@ def run(args: argparse.Namespace) -> int:
 
     # 3. Gemini 비전 분석 (분류 + 텍스트/그래프 추출; 배너 광고는 프롬프트에서 무시)
     #    무료 티어 할당량(20요청/일) 대응: 배치 크기·요청 상한·429 폴백은 settings로 제어
+    #    비전 단계 실패(모델명 오류·SDK 예외 등)가 세션 전체를 죽이지 않도록 방어:
+    #    전사 기반 리포트는 항상 진행 가능해야 함 (자료화면 0장 처리와 동일한 원칙)
     frames_cfg = settings["frames"]
-    all_vision = analyze_frames(
-        selected, settings["models"]["gemini"], out_dir,
-        batch_size=frames_cfg.get("vision_batch_size", 16),
-        max_requests=frames_cfg.get("vision_max_requests", 6),
-        fallback_model=settings["models"].get("gemini_fallback", ""),
-    ) if selected else []
+    all_vision: list[dict] = []
+    if selected:
+        try:
+            all_vision = analyze_frames(
+                selected, settings["models"]["gemini"], out_dir,
+                batch_size=frames_cfg.get("vision_batch_size", 16),
+                max_requests=frames_cfg.get("vision_max_requests", 6),
+                fallback_model=settings["models"].get("gemini_fallback", ""),
+            )
+        except Exception as e:
+            log.error("Gemini 비전 분석 전체 실패(무시하고 전사만으로 진행): %s", e)
 
     # 4. Whisper 음성 전사
     transcript = transcribe(video, out_dir, settings["models"]["whisper"])

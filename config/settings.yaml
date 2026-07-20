@@ -53,7 +53,9 @@ models:
   gemini: "gemini-2.5-flash"
   # 429(일일 할당량 소진) 시 남은 배치를 이 모델로 전환 — flash-lite는 무료 티어
   # 일일 할당량 버킷이 별도라 전멸을 막아줌. 비워두면 폴백 없이 즉시 중단.
-  gemini_fallback: "gemini-2.5-flash-lite"
+  # (2026-07-20: gemini-2.5-flash-lite가 신규 사용자에게 404로 차단되어
+  #  gemini-3.1-flash-lite로 교체 — kr 세션 실 장애로 확인됨)
+  gemini_fallback: "gemini-3.1-flash-lite"
   claude: "claude-sonnet-5"
   # 2026-07-19 사용자 확정: 크레딧 충전 없이 Gemini 전용 운영. Claude 호출 자체를
   # 생략해 매 실행 실패 API 호출을 없앤다. 크레딧 충전 시 false로 바꾸면 Claude가
