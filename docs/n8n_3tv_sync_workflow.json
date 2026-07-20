@@ -56,7 +56,7 @@
       "typeVersion": 2,
       "position": [600, 0],
       "parameters": {
-        "jsCode": "const { yyyy, mm, ymd } = $('오늘 경로 계산').first().json;\nconst files = $input.all().map(i => i.json);\nconst today = files.filter(f => f.name && f.name.includes(ymd) && f.name.endsWith('.md'));\nreturn today.map(f => ({ json: {\n  name: f.name,\n  download_url: f.download_url,\n  target: `/root/obsidian/RaeVault/3protv/${yyyy}/${mm}/${f.name}`\n}}));"
+        "jsCode": "const { yyyy, mm, ymd } = $('오늘 경로 계산').first().json;\nconst files = $input.all().map(i => i.json);\nconst today = files.filter(f => f.name && f.name.includes(ymd) && f.name.endsWith('.md'));\nreturn today.map(f => ({ json: {\n  name: f.name,\n  download_url: f.download_url,\n  target: `/root/obsidian/3protv/${yyyy}/${mm}/${f.name}`\n}}));"
       }
     },
     {

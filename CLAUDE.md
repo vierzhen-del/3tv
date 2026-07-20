@@ -52,8 +52,13 @@
 ## 볼트 연동 (Syncthing 구조 — git 볼트 아님)
 
 - 리포트는 `3tv-reports`(private 중계 repo)에 push → S9의 n8n 스케줄(07:10/08:50 KST)이
-  fetch → `RaeVault/3protv/YYYY/MM/*.md` → Syncthing이 S26에 전파.
+  fetch → 볼트(RaeVault)의 `3protv/YYYY/MM/*.md` → Syncthing이 S26에 전파.
 - **push 경로는 검증 완료**(2026-07-19 05:51 KST "3protv us 리포트" 커밋 실측).
+- ⚠️ **실제 볼트 폴더명은 "RaeVault"가 아니라 `vierzhen_home`(2026-07-20 실측 정정)**:
+  전체 경로는 `/storage/emulated/0/Documents/vierzhen_home/3protv/` (proot 안에서는
+  `--bind /storage/emulated/0/Documents/vierzhen_home:/root/obsidian` 후 `/root/obsidian/3protv/`).
+  "RaeVault"는 노션 문서의 별칭일 뿐 실제 폴더명이 아니었음 — 예전 문서에 남은
+  `RaeVault/...` 표기는 전부 이 경로로 치환해서 읽을 것.
 - **n8n 수신 워크플로 생성·PAT 입력·활성화 완료(2026-07-20)** — Tab S9에서 Claude Code CLI +
   n8n-mcp로 워크플로 생성, GitHub PAT는 n8n 웹UI에서 사용자가 직접 입력(보안상 자동화 제외),
   Active 전환 완료. 이 과정에서 n8n 서버 자체가 (Node 버전 비호환 + DB 테이블 소유권 불일치 +

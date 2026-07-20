@@ -17,8 +17,8 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
    - Repository access: **Only select repositories → `3tv-reports` 하나만**
    - Permissions: **Contents: Read-only**만 (그 외 전부 No access)
    - 이 토큰은 읽기 전용 + repo 1개라 S9에 저장돼도 피해 범위가 최소입니다
-2. proot 진입 시 볼트 bind 확인: `proot-distro login ubuntu --bind /storage/emulated/0/obsidian:/root/obsidian`
-   (n8n에서 `/root/obsidian/RaeVault/3protv/`에 쓸 수 있어야 함)
+2. proot 진입 시 볼트 bind 확인: `proot-distro login ubuntu --bind /storage/emulated/0/Documents/vierzhen_home:/root/obsidian`
+   (n8n에서 `/root/obsidian/3protv/`에 쓸 수 있어야 함)
 
 ## 워크플로 등록 (import 방식)
 
@@ -29,7 +29,7 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 3. 워크플로 Settings → **Timezone: Asia/Seoul** 확인
 4. 활성화(Active 토글)
 
-동작: 평일 **07:10**(us 리포트)과 **08:50**(kr 병합본) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/RaeVault/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
+동작: 평일 **07:10**(us 리포트)과 **08:50**(kr 병합본) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
 
 ## 수동 구성 시 노드 구조 (import가 안 될 때)
 
@@ -40,7 +40,7 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 | 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json` |
 | 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출 |
 | 5 | HTTP Request (다운로드) | GET `{{download_url}}`, Header 동일, Response: **File** |
-| 6 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/RaeVault/3protv/{yyyy}/{mm}/{name}` |
+| 6 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/3protv/{yyyy}/{mm}/{name}` |
 
 2번 Code 노드 스니펫:
 ```javascript
@@ -59,6 +59,6 @@ return [{ json: { yyyy, mm, ymd } }];
 
 ## 확인 방법
 
-1. n8n에서 워크플로 **Execute Workflow**로 수동 1회 실행 → `/root/obsidian/RaeVault/3protv/` 아래 md 생성 확인
-2. S9 옵시디안(또는 파일탐색기)에서 `/storage/emulated/0/obsidian/RaeVault/3protv/` 확인
+1. n8n에서 워크플로 **Execute Workflow**로 수동 1회 실행 → `/root/obsidian/3protv/` 아래 md 생성 확인
+2. S9 옵시디안(또는 파일탐색기)에서 `/storage/emulated/0/Documents/vierzhen_home/3protv/` 확인
 3. 1분 내 S26 옵시디안에 같은 파일 나타나는지 확인
