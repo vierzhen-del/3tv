@@ -32,7 +32,7 @@
   이미 켜져 있어 코드 변경 없이 다음 실행부터 카카오 "나에게 보내기"로도 리포트 발송.
   refresh token 유효기간 약 2개월 — 만료 임박 시 파이프라인이 자동 갱신 시도(GH_PAT 필요),
   실패하면 텔레그램으로 재발급 안내가 온다.
-- **미등록(사용자 작업 잔여)**: n8n용 PAT (3tv-reports Contents:Read 전용).
+- **n8n용 PAT 발급 및 워크플로 활성화 완료(2026-07-20)** — 아래 "볼트 연동" 절 참조.
 
 ## GitHub cron 지연 (실측 40~55분)
 
@@ -54,7 +54,12 @@
 - 리포트는 `3tv-reports`(private 중계 repo)에 push → S9의 n8n 스케줄(07:10/08:50 KST)이
   fetch → `RaeVault/3protv/YYYY/MM/*.md` → Syncthing이 S26에 전파.
 - **push 경로는 검증 완료**(2026-07-19 05:51 KST "3protv us 리포트" 커밋 실측).
-  n8n 수신 워크플로 import·활성화는 미확인 — docs/n8n_s9_sync.md 참고.
+- **n8n 수신 워크플로 생성·PAT 입력·활성화 완료(2026-07-20)** — Tab S9에서 Claude Code CLI +
+  n8n-mcp로 워크플로 생성, GitHub PAT는 n8n 웹UI에서 사용자가 직접 입력(보안상 자동화 제외),
+  Active 전환 완료. 이 과정에서 n8n 서버 자체가 (Node 버전 비호환 + DB 테이블 소유권 불일치 +
+  스키마 권한 미부여) 3중 장애로 죽어 있던 것도 함께 복구됨 — 상세:
+  [노션 — n8n 재시작 실패 3종 해결](https://app.notion.com/p/3a35efd0e46281ab8353c57aa586bf6f),
+  docs/n8n_s9_sync.md 참고.
 - second-brain git repo + Obsidian Git 방식은 이중 동기화 충돌 위험으로 폐기됨(2026-07-18).
   n8n 통합 실패 시에만 폴백으로 사용.
 
