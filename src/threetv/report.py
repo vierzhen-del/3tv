@@ -57,6 +57,14 @@ def _call_claude(model: str, prompt: str, max_tokens: int = 8000) -> str:
 
 
 def _call_gemini(model: str, prompt: str, max_tokens: int = 8000) -> str:
+    """Gemini 호출.
+
+    ⚠️ gemini-2.5 계열은 내부 '사고(thinking)' 토큰도 max_output_tokens 예산을
+    함께 소모한다. 리포트처럼 긴 JSON을 요구하면 사고에 예산을 다 쓰고 본문이
+    중간에서 잘려 JSON이 깨진다(2026-07-25 실측: 응답에 닫는 '}'가 없어 파싱 실패).
+    → 사고 예산을 명시적으로 낮춰 출력 토큰을 확보하고, 잘렸으면 그 사실을
+      명확한 예외로 올려 상위 로그에서 원인이 드러나게 한다.
+    """
     from google import genai
     from google.genai import types
 
@@ -64,14 +72,36 @@ def _call_gemini(model: str, prompt: str, max_tokens: int = 8000) -> str:
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY 미설정")
     client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.2, max_output_tokens=max_tokens
-        ),
-    )
-    return resp.text or ""
+
+    cfg: dict = {"temperature": 0.2, "max_output_tokens": max_tokens}
+    try:
+        # 사고 예산을 소액으로 제한 (0=비활성). 모델이 미지원이면 아래 except로 폴백.
+        cfg_obj = types.GenerateContentConfig(
+            **cfg, thinking_config=types.ThinkingConfig(thinking_budget=512)
+        )
+        resp = client.models.generate_content(model=model, contents=prompt, config=cfg_obj)
+    except Exception as e:
+        if "thinking" not in str(e).lower():
+            raise
+        log.info("%s는 thinking_config 미지원 → 기본 설정으로 재호출", model)
+        resp = client.models.generate_content(
+            model=model, contents=prompt,
+            config=types.GenerateContentConfig(**cfg),
+        )
+
+    text = resp.text or ""
+    # 토큰 상한에 걸려 잘린 응답은 JSON이 깨져 어차피 못 쓴다 — 원인을 명시해 올린다
+    try:
+        finish = str(resp.candidates[0].finish_reason or "")
+    except Exception:
+        finish = ""
+    if "MAX_TOKENS" in finish.upper():
+        raise RuntimeError(
+            f"Gemini 응답이 max_output_tokens({max_tokens})에 걸려 잘렸습니다 "
+            f"(finish_reason={finish}, 확보된 길이={len(text)}자). "
+            f"max_tokens를 올리거나 프롬프트 요구 분량을 줄여야 합니다."
+        )
+    return text
 
 
 def _call_llm(models: dict, prompt: str, max_tokens: int = 8000) -> str:
@@ -394,7 +424,9 @@ JSON 객체로만 답하세요:
     # LLM이 완전히 불가능해도(할당량·빌링·모델 오류) 리포트는 반드시 발행한다.
     # 캡처·전사·시세는 이미 확보돼 있으므로 그날 작업을 통째로 버리지 않는다.
     try:
-        data = _parse_json_obj(_call_llm(settings["models"], prompt, max_tokens=12000))
+        # 33개 지표 + M7 표 + 6개 섹션을 요구하므로 출력 분량이 크다.
+        # 12000으로는 사고 토큰까지 겹쳐 응답이 잘렸다(7/25 실측) → 넉넉하게 확보.
+        data = _parse_json_obj(_call_llm(settings["models"], prompt, max_tokens=40000))
         for key in ("title_keyword", "telegram_text", "markdown_report"):
             if not data.get(key):
                 raise RuntimeError(f"리포트 생성 결과에 {key} 누락")

@@ -189,6 +189,28 @@ def test_multiline_llm_response_uses_llm_not_fallback(tmp_path, monkeypatch):
     assert "나스닥 ▲1.30%" in data["markdown_report"]
 
 
+def test_truncated_response_reports_token_limit_cause(tmp_path, monkeypatch):
+    """토큰 상한에 걸려 잘린 응답은 '잘렸다'는 원인이 로그에 드러나야 한다.
+
+    7/25 실측: 잘린 JSON이 'JSON 객체를 찾지 못함'으로만 보여 원인 파악이 늦어졌다.
+    """
+    class FakeResp:
+        text = '{"title_keyword": "AI", "telegram_text": "본문이 여기서 잘림'
+        candidates = [type("C", (), {"finish_reason": "MAX_TOKENS"})()]
+
+    monkeypatch.setattr(report_mod, "env_token", lambda *a, **k: "fake-key")
+    monkeypatch.setattr(
+        report_mod, "_call_gemini",
+        lambda m, p, t=8000: (_ for _ in ()).throw(
+            RuntimeError(f"Gemini 응답이 max_output_tokens({t})에 걸려 잘렸습니다")
+        ),
+    )
+    data = _generate(tmp_path, transcript="전사")
+    # 열화 경로로 안전하게 떨어지고, 사유에 '잘렸' 이 남는다
+    assert data["title_keyword"] == "원자료시황"
+    assert "잘렸" in data["markdown_report"]
+
+
 def test_vision_parses_json_with_literal_newlines():
     """vision도 동일 — 슬라이드 표 텍스트는 여러 줄이라 같은 문제가 난다."""
     from threetv import vision as vision_mod
