@@ -126,6 +126,12 @@ market:
     # 실제 야간선물 등락률은 방송 화면에서 vision으로 읽어 리포트에 반영한다.
     "EWY": "MSCI 한국 ETF (EWY, 야간 한국물 대용)"
 
+# 네이버 검색 API 뉴스 (NAVER_CLIENT_ID/NAVER_CLIENT_SECRET 등록 시 동작)
+# 무료 한도 하루 25,000건 — 종목별 조회 + 브리핑 수집에 충분히 여유롭다.
+news:
+  per_query: 4              # 종목 1개당 수집할 기사 수
+  briefing_limit: 20        # 브리핑에 넘길 최대 기사 수 (중복 제거 후)
+
 report:
   title_prefix: "3protv오늘"
   disclaimer: "※ 본 리포트는 방송 내용 기반 자동 요약이며 투자 참고용입니다. 투자 판단의 책임은 본인에게 있습니다."

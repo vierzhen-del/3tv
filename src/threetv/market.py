@@ -280,13 +280,19 @@ def search_links(name: str, market: str, ticker: str = "") -> list[dict]:
 
 
 def fetch_news(name: str, market: str, ticker: str = "", limit: int = 3) -> list[dict]:
-    """언급 종목의 관련 기사 링크.
+    """언급 종목의 관련 기사.
 
-    실제 기사(yfinance 뉴스)를 우선 붙이고, 실패하거나 국내 종목이면 검색 링크로
-    갈음한다. 검색 링크는 네트워크 없이 만들 수 있어 항상 최소 1건은 보장된다.
+    우선순위: ① 네이버 뉴스(한국어 기사, 국내·해외 종목 모두 커버)
+             ② yfinance 뉴스(미국 종목 영문 기사)
+             ③ 검색 링크 (네트워크 없이 생성 — 항상 최소 1건 보장)
     """
+    from . import news as news_mod
+
     items: list[dict] = []
-    if market == "US" and ticker and ticker.isascii():
+    if news_mod.enabled():
+        items += news_mod.naver_news(name, display=limit)
+
+    if len(items) < limit and market == "US" and ticker and ticker.isascii():
         try:
             import yfinance as yf
 
@@ -298,4 +304,5 @@ def fetch_news(name: str, market: str, ticker: str = "", limit: int = 3) -> list
                     break
         except Exception as e:
             log.debug("뉴스 조회 실패 %s: %s", ticker, e)
-    return items + search_links(name, market, ticker)
+
+    return items[:limit] + search_links(name, market, ticker)

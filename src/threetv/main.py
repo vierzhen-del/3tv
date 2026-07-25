@@ -27,7 +27,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import market
+from . import market, news
 from .capture import CaptureError, capture_live_session, download_vod
 from .common import (load_env, load_holdings, load_settings, log, now_kst,
                      output_dir, parse_duration, setup_logging)
@@ -187,6 +187,19 @@ def run(args: argparse.Namespace) -> int:
         holdings_data["holdings"] + holdings_data["watchlist"]
     )
 
+    # 5.5 뉴스 브리핑용 기사 수집 (네이버 검색 API — 무료 25,000건/일)
+    #     언급 종목 + 보유종목 이름으로 검색해 중복 제거 후 리포트에 브리핑으로 싣는다
+    briefing_names = [v["name"] for v in verified if v.get("name")][:8]
+    briefing_names += [
+        h["name"] for h in holdings_data["holdings"]
+        if h.get("name") and h["name"] not in briefing_names
+    ][:4]
+    news_briefing = news.collect_briefing(
+        briefing_names,
+        per_query=settings.get("news", {}).get("per_query", 4),
+        limit=settings.get("news", {}).get("briefing_limit", 20),
+    )
+
     # kr 세션은 오늘 아침 us 리포트를 컨텍스트로 사용
     us_context = ""
     if session == "kr" and not args.skip_archive:
@@ -196,7 +209,7 @@ def run(args: argparse.Namespace) -> int:
     report = generate_report(
         settings, session, vision_results, transcript,
         indices, verified, holdings_data, holdings_quotes,
-        out_dir, us_context_md=us_context,
+        out_dir, us_context_md=us_context, news_briefing=news_briefing,
     )
 
     # 7. 전송 (텔레그램 → 카카오, best-effort)

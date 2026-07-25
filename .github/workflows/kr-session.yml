@@ -64,6 +64,9 @@ jobs:
           # pykrx 회원 로그인 — 미전달 시 익명 요청으로 떨어져 국내 종목 시세가 빈다
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
+          # 네이버 검색 API — 종목별 관련 기사 + 뉴스 브리핑 수집
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_PARENT_ID: ${{ secrets.NOTION_PARENT_ID }}
         run: |

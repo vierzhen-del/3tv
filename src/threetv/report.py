@@ -234,6 +234,19 @@ def _in_window(clock: str, window: list | None) -> bool:
     return str(window[0]) <= clock <= str(window[1])
 
 
+def _briefing_lines(news_briefing: list[dict] | None) -> str:
+    """수집된 기사 목록을 '제목 · 링크 (검색어)' 줄로. LLM 요약 실패 시에도 쓰인다."""
+    if not news_briefing:
+        return ""
+    lines = []
+    for n in news_briefing:
+        q = f" ({n['query']})" if n.get("query") else ""
+        lines.append(f"• [{n['title']}]({n['url']}){q}")
+        if n.get("summary"):
+            lines.append(f"  {n['summary'][:160]}")
+    return "\n".join(lines)
+
+
 def _capture_blocks(
     vision_results: list[dict],
     verified_mentions: list[dict],
@@ -357,6 +370,7 @@ def _fallback_report(
     holdings_data: dict,
     holdings_quotes: list[dict],
     reason: str,
+    news_briefing: list[dict] | None = None,
 ) -> dict:
     """LLM 없이 원자료만으로 리포트 생성 (LLM 완전 불가 시 열화 경로).
 
@@ -427,6 +441,12 @@ def _fallback_report(
         f"\n### 💼 보유종목 언급 체크 (문자열 매칭)\n{mention_block}",
         f"\n### 📈 방송 언급 종목 · 관련 뉴스\n{mentioned_stocks}",
     ]
+    # LLM 요약은 불가하니 기사 목록을 그대로 (중복 제거는 수집 단계에서 이미 완료)
+    briefing_block = _briefing_lines(news_briefing)
+    if briefing_block:
+        md_parts.append(
+            f"\n### 📰 뉴스 브리핑 (수집 원문 — AI 요약 없음)\n{briefing_block}"
+        )
     if transcript:
         md_parts.append(f"\n### 🎙 음성 전사 (전문)\n```\n{transcript}\n```")
     md_parts.append(f"\n{settings['report']['disclaimer']}")
@@ -500,6 +520,7 @@ def generate_report(
     holdings_quotes: list[dict],
     out_dir: Path,
     us_context_md: str = "",
+    news_briefing: list[dict] | None = None,
 ) -> dict:
     """최종 리포트 생성.
 
@@ -540,7 +561,12 @@ def generate_report(
    — **각 종목마다 관련 기사 링크를 1~2개 붙이세요.** [언급 종목 검증 시세]의 각 항목에
      `news` 배열이 있고 그 안에 title/url/publisher가 들어 있습니다. 마크다운 링크
      형식 `[제목](url)`으로 쓰고, url을 임의로 만들지 말고 주어진 값만 그대로 쓰세요.
-6) 🇰🇷 **오늘 국내 증시 전망** (필수 섹션) — 위 미국장 결과를 근거로:
+6) 📰 **뉴스 브리핑** (아래 [뉴스 브리핑 기사]가 있을 때만) — 수집된 기사를 다음 규칙으로:
+   - **겹치는 기사는 하나로 묶으세요.** 같은 사안을 여러 매체가 쓴 경우 한 항목으로 합칩니다.
+   - 묶은 사안마다 **3줄 이내로 요약**하고, 끝에 대표 기사 링크 1~2개를 답니다.
+   - 방송 내용·보유종목과 관련된 사안을 앞에 두고, 무관한 기사는 버리세요.
+   - url은 주어진 것만 쓰고 새로 만들지 마세요. 기사 제목을 그대로 베끼지 말고 요약하세요.
+7) 🇰🇷 **오늘 국내 증시 전망** (필수 섹션) — 위 미국장 결과를 근거로:
    - KOSPI·KOSDAQ·KOSPI200 전일 종가와 오늘 예상 방향(상승/하락/보합 압력) + 근거
    - **코스피 야간선물**: 방송 화면에 야간선물 등락률이 나오면 그 값을 쓰고
      "(방송 화면 기준)"을 붙이세요. 화면에 없으면 검증 시세의 EWY(MSCI 한국 ETF,
@@ -624,6 +650,7 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 
 [화면 캡처 원문 판독 (광고 제외, 시간순)]
 {_material_digest(vision_results)}
+{f"{chr(10)}[뉴스 브리핑 기사 — 겹치는 것 묶어 3줄 요약]{chr(10)}" + _briefing_lines(news_briefing) if news_briefing else ""}
 {f"{chr(10)}[음성 전사]{chr(10)}" + transcript[:40000] if transcript else ""}{us_ctx}"""
 
     # LLM이 완전히 불가능해도(할당량·빌링·모델 오류) 리포트는 반드시 발행한다.
@@ -640,6 +667,7 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
         data = _fallback_report(
             settings, session, vision_results, transcript, indices,
             verified_mentions, holdings_data, holdings_quotes, reason=str(e)[:200],
+            news_briefing=news_briefing,
         )
 
     out_file = out_dir / "report.json"

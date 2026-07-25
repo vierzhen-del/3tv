@@ -280,6 +280,29 @@ def test_outside_verbatim_window_is_compressed(tmp_path, llm_down):
     assert "첫 줄 내용 둘째 줄 내용" in md    # 한 줄로 합쳐짐
 
 
+def test_fallback_includes_news_briefing(tmp_path, llm_down):
+    """LLM 요약이 불가해도 수집된 기사 목록은 브리핑으로 남아야 한다."""
+    briefing = [
+        {"title": "마이크론 투자 확대", "url": "https://news/mu",
+         "summary": "메모리 슈퍼사이클 기대", "query": "마이크론"},
+        {"title": "엔비디아 신고가", "url": "https://news/nvda",
+         "summary": "AI 수요 지속", "query": "엔비디아"},
+    ]
+    data = report_mod.generate_report(
+        SETTINGS, "us", [], "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+        news_briefing=briefing,
+    )
+    md = data["markdown_report"]
+    assert "뉴스 브리핑" in md
+    assert "[마이크론 투자 확대](https://news/mu)" in md
+    assert "메모리 슈퍼사이클 기대" in md
+
+
+def test_briefing_omitted_when_no_articles(tmp_path, llm_down):
+    md = _generate(tmp_path, transcript="")["markdown_report"]
+    assert "뉴스 브리핑" not in md
+
+
 def test_sections_reject_non_sectioned_text():
     with pytest.raises(ValueError):
         report_mod._parse_sections("그냥 평범한 텍스트 응답")
