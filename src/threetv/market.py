@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import functools
+import math
 from datetime import datetime, timedelta
 
 from .common import KST, log
@@ -14,33 +15,119 @@ from .common import KST, log
 def _fmt_quote(
     name: str, ticker: str, market: str, close: float, pct: float,
     asof: str = "", prev_close: float | None = None,
-) -> dict:
-    """시세 1건. asof/prev_close는 '어느 시점 종가인지'를 리포트에 명시하기 위한 것."""
+) -> dict | None:
+    """시세 1건. asof/prev_close는 '어느 시점 종가인지'를 리포트에 명시하기 위한 것.
+
+    ⚠️ close/pct가 NaN·inf면 None을 반환한다. yfinance는 스로틀링·데이터 결측 시
+    예외 대신 **NaN이 담긴 행**을 돌려주는데, 그대로 통과시키면 리포트에
+    'nan (-nan%)'이 그대로 실린다 (2026-07-25 텔레그램 실측 — 미국 지표 전부 nan).
+    """
+    if not (math.isfinite(close) and math.isfinite(pct)):
+        log.warning("시세 값이 NaN/inf → 제외: %s (%s)", name, ticker)
+        return None
     return {
         "name": name,
         "ticker": ticker,
         "market": market,
         "close": round(close, 2),
-        "prev_close": round(prev_close, 2) if prev_close is not None else None,
+        "prev_close": round(prev_close, 2)
+        if prev_close is not None and math.isfinite(prev_close) else None,
         "change_pct": round(pct, 2),
         "direction": "▲" if pct > 0 else ("▼" if pct < 0 else "-"),
+        # 한눈에 등락을 보기 위한 아이콘 (텔레그램 가독성)
+        "icon": "📈" if pct > 0 else ("📉" if pct < 0 else "➖"),
         "asof": asof,      # 종가 기준일 (YYYY-MM-DD)
     }
 
 
+def _pair_from_closes(closes) -> tuple[float, float, str] | None:
+    """종가 시계열에서 (최근 종가, 전일 종가, 기준일)을 뽑는다.
+
+    NaN 행을 먼저 버리는 것이 핵심 — 휴장일·결측·스로틀링으로 생긴 NaN 행이
+    마지막에 오면 그 값이 그대로 종가로 쓰인다.
+    """
+    s = closes.dropna()
+    if len(s) < 2:
+        return None
+    close, prev = float(s.iloc[-1]), float(s.iloc[-2])
+    if not (math.isfinite(close) and math.isfinite(prev)) or prev == 0:
+        return None
+    try:
+        asof = str(s.index[-1].date())
+    except Exception:
+        asof = ""
+    return close, prev, asof
+
+
+def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
+    """미국 티커 여러 개를 **한 번의 요청**으로 조회.
+
+    티커마다 개별 요청을 보내면(33개) Yahoo가 공유 CI IP를 스로틀링해 NaN만
+    돌려주는 일이 잦다 — 2026-07-25 실측 실패 원인. yf.download 배치 호출은
+    요청 1건이라 이 문제를 근본적으로 줄인다.
+    """
+    import yfinance as yf
+
+    symbols = list(tickers)
+    if not symbols:
+        return []
+    try:
+        df = yf.download(
+            symbols, period="1mo", auto_adjust=False, group_by="ticker",
+            progress=False, threads=False,
+        )
+    except Exception as e:
+        log.warning("yfinance 배치 조회 실패 → 개별 조회로 폴백: %s", e)
+        df = None
+
+    quotes: list[dict] = []
+    missing: list[str] = []
+    for sym in symbols:
+        closes = None
+        if df is not None and len(df):
+            try:
+                # 여러 티커면 (ticker, field) MultiIndex, 1개면 평면 컬럼
+                closes = df[sym]["Close"] if len(symbols) > 1 else df["Close"]
+            except Exception:
+                closes = None
+        pair = _pair_from_closes(closes) if closes is not None else None
+        if pair is None:
+            missing.append(sym)
+            continue
+        close, prev, asof = pair
+        q = _fmt_quote(tickers[sym], sym, "US", close, (close - prev) / prev * 100,
+                       asof, prev)
+        if q:
+            quotes.append(q)
+
+    # 배치에서 빠진 것만 개별 재시도 (요청 수를 최소로 유지)
+    for sym in missing:
+        q = us_quote(sym, tickers[sym])
+        if q:
+            quotes.append(q)
+    if missing:
+        got = {q["ticker"] for q in quotes}
+        still = [s for s in missing if s not in got]
+        if still:
+            log.warning("시세 조회 실패(리포트에서 제외): %s", ", ".join(still))
+    return quotes
+
+
 def us_quote(ticker: str, name: str | None = None) -> dict | None:
-    """미국 종목/지수의 최근 종가와 전일 대비 등락률."""
+    """미국 종목/지수의 최근 종가와 전일 대비 등락률 (개별 조회)."""
     import yfinance as yf
 
     try:
-        hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
-        if len(hist) < 2:
+        hist = yf.Ticker(ticker).history(period="1mo", auto_adjust=False)
+        if not len(hist):
             return None
-        close = float(hist["Close"].iloc[-1])
-        prev = float(hist["Close"].iloc[-2])
-        pct = (close - prev) / prev * 100
-        asof = str(hist.index[-1].date())
-        return _fmt_quote(name or ticker, ticker, "US", close, pct, asof, prev)
+        pair = _pair_from_closes(hist["Close"])
+        if pair is None:
+            log.debug("yfinance 유효 종가 부족 %s", ticker)
+            return None
+        close, prev, asof = pair
+        return _fmt_quote(name or ticker, ticker, "US", close,
+                          (close - prev) / prev * 100, asof, prev)
     except Exception as e:
         log.debug("yfinance 조회 실패 %s: %s", ticker, e)
         return None
@@ -85,24 +172,27 @@ def kr_quote(name_or_code: str, name: str | None = None) -> dict | None:
         )
         if len(df) < 2:
             return None
-        close = float(df["종가"].iloc[-1])
-        prev = float(df["종가"].iloc[-2])
-        pct = (close - prev) / prev * 100
+        pair = _pair_from_closes(df["종가"])
+        if pair is None:
+            return None
+        close, prev, asof = pair
         disp_name = name or stock.get_market_ticker_name(code)
-        asof = str(df.index[-1].date())
-        return _fmt_quote(disp_name, code, "KR", close, pct, asof, prev)
+        return _fmt_quote(disp_name, code, "KR", close,
+                          (close - prev) / prev * 100, asof, prev)
     except Exception as e:
         log.debug("pykrx 조회 실패 %s: %s", code, e)
         return None
 
 
 def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
-    """설정된 주요 지수/자산 시세 일괄 조회."""
-    quotes = []
-    for ticker, name in indices_cfg.items():
-        q = us_quote(ticker, name)
-        if q:
-            quotes.append(q)
+    """설정된 주요 지수/자산 시세 일괄 조회 (요청 1건으로 배치 조회).
+
+    설정 순서(방송 슬라이드 순서)를 그대로 유지해 리포트에서 화면과 대조하기 쉽게 한다.
+    """
+    quotes = us_quotes_batch(indices_cfg)
+    order = {t: i for i, t in enumerate(indices_cfg)}
+    quotes.sort(key=lambda q: order.get(q["ticker"], 999))
+    log.info("주요 지표 조회: %d/%d건 성공", len(quotes), len(indices_cfg))
     return quotes
 
 
@@ -126,7 +216,7 @@ def verify_mentions(mentions: list[dict]) -> list[dict]:
             quote = us_quote(guess, name)
         elif market == "KR":
             quote = kr_quote(guess or name, name)
-        verified.append({**m, "quote": quote})
+        verified.append({**m, "quote": quote, "news": fetch_news(name, market, guess)})
     ok = sum(1 for v in verified if v["quote"])
     log.info("언급 종목 시세 검증: %d/%d 성공", ok, len(verified))
     return verified
@@ -143,3 +233,69 @@ def fetch_holdings_quotes(holdings: list[dict]) -> list[dict]:
         if q:
             quotes.append(q)
     return quotes
+
+
+# ─────────────────────────── 관련 기사 링크 ───────────────────────────
+
+def _news_item(raw: dict) -> dict | None:
+    """yfinance 뉴스 1건을 {title,url,publisher}로 정규화.
+
+    yfinance 1.x는 {'content': {'title', 'canonicalUrl': {'url'}, 'provider': {...}}},
+    구버전은 {'title','link','publisher'} 평면 구조 — 둘 다 받는다.
+    """
+    c = raw.get("content") or raw
+    title = (c.get("title") or "").strip()
+    url = ""
+    for key in ("canonicalUrl", "clickThroughUrl"):
+        v = c.get(key)
+        if isinstance(v, dict) and v.get("url"):
+            url = v["url"]
+            break
+    url = url or c.get("link") or ""
+    prov = c.get("provider")
+    publisher = (prov.get("displayName") if isinstance(prov, dict) else None) \
+        or c.get("publisher") or ""
+    if not title or not url:
+        return None
+    return {"title": title[:160], "url": url, "publisher": publisher}
+
+
+def search_links(name: str, market: str, ticker: str = "") -> list[dict]:
+    """검색 링크 (네트워크 불필요 — 항상 제공되는 최소 보장 링크)."""
+    from urllib.parse import quote_plus
+
+    q = quote_plus(name)
+    links = [{
+        "title": f"{name} 뉴스 검색",
+        "url": f"https://search.naver.com/search.naver?where=news&query={q}",
+        "publisher": "네이버뉴스 검색",
+    }]
+    if market == "US" and ticker and ticker.isascii():
+        links.append({
+            "title": f"{ticker} 종목정보·뉴스",
+            "url": f"https://finance.yahoo.com/quote/{ticker}/news",
+            "publisher": "Yahoo Finance",
+        })
+    return links
+
+
+def fetch_news(name: str, market: str, ticker: str = "", limit: int = 3) -> list[dict]:
+    """언급 종목의 관련 기사 링크.
+
+    실제 기사(yfinance 뉴스)를 우선 붙이고, 실패하거나 국내 종목이면 검색 링크로
+    갈음한다. 검색 링크는 네트워크 없이 만들 수 있어 항상 최소 1건은 보장된다.
+    """
+    items: list[dict] = []
+    if market == "US" and ticker and ticker.isascii():
+        try:
+            import yfinance as yf
+
+            for raw in (yf.Ticker(ticker).news or [])[: limit * 2]:
+                it = _news_item(raw)
+                if it:
+                    items.append(it)
+                if len(items) >= limit:
+                    break
+        except Exception as e:
+            log.debug("뉴스 조회 실패 %s: %s", ticker, e)
+    return items + search_links(name, market, ticker)

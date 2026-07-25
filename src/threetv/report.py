@@ -163,8 +163,11 @@ def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> st
 
 
 def _quote_line(q: dict) -> str:
+    """`• 나스닥: 20,123.45 📈 ▲1.23% [2026-07-24 종가]` 형태 (등락 아이콘 포함)."""
     asof = f" [{q['asof']} 종가]" if q.get("asof") else ""
-    return f"- {q['name']}: {q['close']:,} ({q['direction']}{abs(q['change_pct'])}%){asof}"
+    icon = q.get("icon") or ""
+    sign = f"{q['direction']}{abs(q['change_pct'])}%"
+    return f"• {q['name']}: {q['close']:,} {icon} {sign}{asof}".replace("  ", " ")
 
 
 def _mentions_holding(needle: str, hay_lower: str) -> bool:
@@ -243,8 +246,25 @@ def _fallback_report(
         f"- {m['name']}: {'✅ ' + (m['context'] or '언급') if m['mentioned'] else '언급 없음'}"
         for m in holdings_mentioned
     ) or "- 대조할 보유종목 없음"
-    named = [v.get("name") for v in verified_mentions if v.get("name")]
-    mentioned_stocks = ", ".join(named) if named else "추출 실패(LLM 필요)"
+    # 언급 종목: 시세 + 관련 기사 링크를 함께 (LLM 없이도 링크는 제공 가능)
+    mention_lines: list[str] = []
+    for v in verified_mentions:
+        nm = (v.get("name") or "").strip()
+        if not nm:
+            continue
+        q = v.get("quote")
+        head = f"• **{nm}**"
+        if q:
+            asof = f" [{q['asof']} 종가]" if q.get("asof") else ""
+            head += (f": {q['close']:,} {q.get('icon', '')} "
+                     f"{q['direction']}{abs(q['change_pct'])}%{asof}")
+        if v.get("context"):
+            head += f" — {v['context']}"
+        mention_lines.append(head)
+        for n in (v.get("news") or [])[:3]:
+            pub = f" ({n['publisher']})" if n.get("publisher") else ""
+            mention_lines.append(f"  - [{n['title']}]({n['url']}){pub}")
+    mentioned_stocks = "\n".join(mention_lines) or "추출 실패(LLM 필요)"
 
     # ── 옵시디안용: 전사 전문 보존 (방송 내용 자체가 유일한 산출물이므로 자르지 않음)
     md_parts = [
@@ -252,7 +272,7 @@ def _fallback_report(
         f"\n### 💹 주요 지수/자산 ({today})\n{idx_block}",
         f"\n### 💼 보유종목 시세\n{hold_block}",
         f"\n### 💼 보유종목 언급 체크 (문자열 매칭)\n{mention_block}",
-        f"\n### 📈 방송 언급 종목\n{mentioned_stocks}",
+        f"\n### 📈 방송 언급 종목 · 관련 기사\n{mentioned_stocks}",
     ]
     if material:
         md_parts.append(f"\n### 📄 방송 자료화면 원문 (시간순)\n```\n{material}\n```")
@@ -265,15 +285,19 @@ def _fallback_report(
     md_parts.append(f"\n{settings['report']['disclaimer']}")
     markdown_report = "\n".join(md_parts)
 
-    # ── 텔레그램용: 1건 한도 안에서 전사를 최대한 (전문은 옵시디안·아티팩트에)
+    # ── 텔레그램용: 지표·종목·기사링크를 먼저, 전사는 짧은 발췌만.
+    # 전사 원문을 텔레그램에 길게 쏟으면 가독성이 급격히 나빠진다 — 전문은
+    # 옵시디안 리포트(markdown_report)와 Actions 아티팩트에 그대로 보존된다.
     tg_head = "\n".join([
         banner,
         f"\n💹 주요 지수/자산 ({today})\n{idx_block}",
         f"\n💼 보유종목 시세\n{hold_block}",
         f"\n💼 보유종목 언급 체크\n{mention_block}",
+        f"\n📈 방송 언급 종목 · 관련 기사\n{mentioned_stocks}",
     ])
-    budget = settings["telegram"]["max_message_len"] - len(tg_head) - 400
-    excerpt = transcript[:budget] if budget > 0 else ""
+    room = settings["telegram"]["max_message_len"] - len(tg_head) - 400
+    budget = max(0, min(room, 1200))     # 발췌는 최대 1,200자
+    excerpt = transcript[:budget]
     tail = "…(이하 생략 — 전문은 옵시디안 리포트·Actions 아티팩트 참조)" \
         if len(transcript) > len(excerpt) else ""
     telegram_text = f"{tg_head}\n\n🎙 음성 전사 발췌\n{excerpt}{tail}"
@@ -362,6 +386,9 @@ def generate_report(
 4) 🚀 M7 + 주요 AI·반도체 개별종목 표 (종목 | 종가 | 전일대비 | 기준일):
    애플·마이크로소프트·알파벳·아마존·엔비디아·메타·테슬라 / 인텔·AMD·브로드컴·오라클
 5) 📈 방송에서 언급된 그 외 미국 종목: 종목 | 종가 | 전일대비
+   — **각 종목마다 관련 기사 링크를 1~2개 붙이세요.** [언급 종목 검증 시세]의 각 항목에
+     `news` 배열이 있고 그 안에 title/url/publisher가 들어 있습니다. 마크다운 링크
+     형식 `[제목](url)`으로 쓰고, url을 임의로 만들지 말고 주어진 값만 그대로 쓰세요.
 6) 🇰🇷 **오늘 국내 증시 전망** (필수 섹션) — 위 미국장 결과를 근거로:
    - KOSPI·KOSDAQ·KOSPI200 전일 종가와 오늘 예상 방향(상승/하락/보합 압력) + 근거
    - **코스피 야간선물**: 방송 화면에 야간선물 등락률이 나오면 그 값을 쓰고
@@ -390,8 +417,13 @@ def generate_report(
 - 가격·등락률은 반드시 [검증 시세]를 우선하고, 화면 숫자는 검증 실패 시에만 "(방송 화면 기준)"을 붙여 사용
 - **모든 시세에는 "어느 시점 종가인지"를 반드시 함께 표기**하세요. 검증 시세의 `asof`
   필드가 종가 기준일이고 `prev_close`가 그 전일 종가입니다. 등락률은 이 두 값의 비교
-  결과이므로, 예: "나스닥 20,123.45 ▲1.23% (7/24 종가 기준)" 형식으로 쓰세요.
-  asof가 오늘이 아니면 최신 거래일 종가라는 뜻이니 날짜를 명시해 혼동을 막으세요.
+  결과입니다. asof가 오늘이 아니면 최신 거래일 종가라는 뜻이니 날짜를 명시해 혼동을 막으세요.
+- **등락 아이콘을 반드시 붙이세요** — 각 시세의 `icon` 필드(📈 상승 / 📉 하락 / ➖ 보합)를
+  그대로 사용하고, 형식은 다음을 따르세요:
+  `• 나스닥: 20,123.45 📈 ▲1.23% (7/24 종가)`
+  숫자에는 천단위 쉼표를 넣고, 목록은 `•` 불릿으로 정렬해 한눈에 읽히게 하세요.
+- 시세가 없는 항목(조회 실패·비상장 등)은 "조회 불가"로만 적고 **절대 숫자를 만들지 마세요**.
+  특히 `nan`·`0` 같은 값을 시세처럼 쓰면 안 됩니다.
 - 예측은 근거(방송 발언/자료)와 함께, 과신 없이
 - 마지막에 디스클레이머: {disclaimer}
 
