@@ -134,9 +134,31 @@ def us_quote(ticker: str, name: str | None = None) -> dict | None:
 
 
 @functools.lru_cache(maxsize=1)
+def _pykrx_stock():
+    """pykrx.stock 모듈을 안전하게 가져온다 (실패 시 None).
+
+    ⚠️ pykrx는 **import 시점에** KRX 로그인 세션을 만든다(webio.py 모듈 레벨에서
+    build_krx_session() 호출). KRX_ID/KRX_PW가 설정돼 있고 KRX가 JSON이 아닌 응답
+    (점검 페이지·차단·일시 오류)을 주면 `from pykrx import stock` 자체가
+    JSONDecodeError로 터져 **파이프라인 전체가 죽는다** — 2026-07-25 실측
+    (verify_mentions에서 터져 리포트가 아예 생성되지 않았다).
+    한 번만 시도하고 결과를 캐시해, 실패하면 국내 시세만 비고 계속 진행한다.
+    """
+    try:
+        from pykrx import stock
+
+        return stock
+    except Exception as e:
+        log.warning("pykrx 초기화 실패 — 국내 종목 시세를 건너뜁니다: %s", e)
+        return None
+
+
+@functools.lru_cache(maxsize=1)
 def _krx_name_map() -> dict[str, str]:
     """한국 종목명 → 6자리 코드 매핑 (KOSPI + KOSDAQ)."""
-    from pykrx import stock
+    stock = _pykrx_stock()
+    if stock is None:
+        return {}
 
     date = datetime.now(KST).strftime("%Y%m%d")
     mapping: dict[str, str] = {}
@@ -159,7 +181,9 @@ def kr_resolve(name_or_code: str) -> str | None:
 
 def kr_quote(name_or_code: str, name: str | None = None) -> dict | None:
     """한국 종목의 최근 종가(장전이면 전일 종가)와 등락률."""
-    from pykrx import stock
+    stock = _pykrx_stock()
+    if stock is None:
+        return None
 
     code = kr_resolve(name_or_code)
     if not code:

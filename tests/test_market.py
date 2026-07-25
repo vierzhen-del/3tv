@@ -121,6 +121,51 @@ def test_batch_handles_single_ticker_flat_columns(monkeypatch):
     assert len(quotes) == 1 and quotes[0]["close"] == 101.0
 
 
+# ─────────────────── pykrx import 실패 방어 ───────────────────
+
+def test_pykrx_import_failure_returns_none_not_raise(monkeypatch):
+    """2026-07-25 실장애 재현: pykrx는 import 시점에 KRX 로그인을 한다.
+
+    KRX가 비-JSON 응답을 주면 import 자체가 JSONDecodeError로 터졌고, 그것이
+    verify_mentions까지 올라가 파이프라인 전체를 죽였다 (리포트 미생성).
+    """
+    import builtins
+    real_import = builtins.__import__
+
+    def boom(name, *a, **k):
+        if name.startswith("pykrx"):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        return real_import(name, *a, **k)
+
+    market._pykrx_stock.cache_clear()
+    market._krx_name_map.cache_clear()
+    monkeypatch.setattr(builtins, "__import__", boom)
+    try:
+        assert market._pykrx_stock() is None
+        assert market.kr_quote("005930", "삼성전자") is None      # 예외 대신 None
+        assert market._krx_name_map() == {}
+    finally:
+        market._pykrx_stock.cache_clear()
+        market._krx_name_map.cache_clear()
+
+
+def test_verify_mentions_survives_pykrx_failure(monkeypatch):
+    """국내 종목이 섞여 있어도 파이프라인이 계속 진행돼야 한다."""
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: None)
+    monkeypatch.setattr(market, "fetch_news", lambda *a, **k: [])
+    monkeypatch.setattr(
+        market, "us_quote",
+        lambda t, n=None: market._fmt_quote(n or t, t, "US", 100.0, 1.0, "2026-07-24", 99.0),
+    )
+    got = market.verify_mentions([
+        {"name": "삼성전자", "market": "KR", "ticker_guess": "005930"},
+        {"name": "엔비디아", "market": "US", "ticker_guess": "NVDA"},
+    ])
+    assert len(got) == 2
+    assert got[0]["quote"] is None          # 국내는 비고
+    assert got[1]["quote"]["close"] == 100.0  # 미국은 정상
+
+
 # ───────────────────── 관련 기사 링크 ─────────────────────
 
 def test_search_links_always_available_without_network():
