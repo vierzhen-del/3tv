@@ -62,6 +62,10 @@ models:
   # 자동으로 primary 복귀 (report.py _call_llm 참고, 14fiance CAPTURE_CLAUDE_API_DISABLED와 동일 계열)
   claude_disabled: true
   whisper: "small"          # faster-whisper 모델 크기 (tiny/base/small/medium)
+  # 2026-07-25 사용자 확정: 음성 전사 사용 안 함 — 리포트는 화면 캡처(자료화면) +
+  # 종목 시세 + 관련 뉴스링크로 구성한다. 전사는 45분 오디오에 약 12분이 걸려
+  # 파이프라인 런타임의 대부분을 차지했다. false로 바꾸면 다시 켜진다.
+  whisper_disabled: true
 
 market:
   # 리포트에 항상 포함할 주요 지수/자산 (yfinance 티커)

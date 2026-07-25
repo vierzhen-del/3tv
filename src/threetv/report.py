@@ -214,11 +214,26 @@ def _parse_sections(text: str) -> dict:
 
 
 def _quote_line(q: dict) -> str:
-    """`• 나스닥: 20,123.45 📈 ▲1.23% [2026-07-24 종가]` 형태 (등락 아이콘 포함)."""
-    asof = f" [{q['asof']} 종가]" if q.get("asof") else ""
+    """`• 나스닥: 20,123.45 📈 ▲1.23%` 형태.
+
+    종가 기준일은 줄마다 반복하지 않고 섹션 제목에 한 번만 쓴다(_asof_label).
+    """
     icon = q.get("icon") or ""
     sign = f"{q['direction']}{abs(q['change_pct'])}%"
-    return f"• {q['name']}: {q['close']:,} {icon} {sign}{asof}".replace("  ", " ")
+    return f"• {q['name']}: {q['close']:,} {icon} {sign}".replace("  ", " ")
+
+
+def _asof_label(quotes: list[dict]) -> str:
+    """시세 목록의 대표 기준일을 'M/D 종가 기준'으로. 섹션 제목에 한 번만 표기."""
+    dates = [q.get("asof") for q in quotes if q.get("asof")]
+    if not dates:
+        return ""
+    common = max(set(dates), key=dates.count)
+    try:
+        y, m, d = common.split("-")
+        return f"{int(m)}/{int(d)} 종가 기준"
+    except ValueError:
+        return f"{common} 종가 기준"
 
 
 def _mentions_holding(needle: str, hay_lower: str) -> bool:
@@ -274,9 +289,10 @@ def _fallback_report(
 ) -> dict:
     """LLM 없이 원자료만으로 리포트 생성 (LLM 완전 불가 시 열화 경로).
 
-    Whisper 전사(로컬 추론)와 yfinance/pykrx 시세는 API 키·할당량과 무관하게
-    항상 확보되므로, AI 요약이 불가능해도 이 둘만으로 유용한 리포트가 된다.
-    반환 형태는 generate_report()와 동일해 호출 측(전송·아카이브)이 그대로 동작한다.
+    구성은 정상 리포트와 같은 축 — **화면 캡처(자료화면) → 종목 시세 → 관련 뉴스링크**.
+    시세와 뉴스링크는 API 키·LLM과 무관하게 확보되므로 AI 요약이 불가능해도
+    쓸 만한 리포트가 된다. 반환 형태는 generate_report()와 동일해 호출 측
+    (전송·아카이브)이 그대로 동작한다.
     """
     label = settings["sessions"][session]["label"]
     today = now_kst().strftime("%Y-%m-%d (%a)")
@@ -287,16 +303,18 @@ def _fallback_report(
 
     banner = (
         "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
-        f"LLM 호출이 모두 실패해(사유: {reason}) 방송 음성 전사와 "
+        f"LLM 호출이 모두 실패해(사유: {reason}) 방송 화면 캡처와 "
         "API 검증 시세만으로 자동 생성했습니다. 요약·전망 해석은 포함되지 않습니다."
     )
 
-    idx_block = "\n".join(_quote_line(q) for q in indices) or "- 조회 실패"
-    hold_block = "\n".join(_quote_line(q) for q in holdings_quotes) or "- 조회 실패"
+    idx_asof = _asof_label(indices)
+    hold_asof = _asof_label(holdings_quotes)
+    idx_block = "\n".join(_quote_line(q) for q in indices) or "• 조회 실패"
+    hold_block = "\n".join(_quote_line(q) for q in holdings_quotes) or "• 조회 실패"
     mention_block = "\n".join(
-        f"- {m['name']}: {'✅ ' + (m['context'] or '언급') if m['mentioned'] else '언급 없음'}"
+        f"• {m['name']}: {'✅ ' + (m['context'] or '언급') if m['mentioned'] else '언급 없음'}"
         for m in holdings_mentioned
-    ) or "- 대조할 보유종목 없음"
+    ) or "• 대조할 보유종목 없음"
     # 언급 종목: 시세 + 관련 기사 링크를 함께 (LLM 없이도 링크는 제공 가능)
     mention_lines: list[str] = []
     for v in verified_mentions:
@@ -306,9 +324,8 @@ def _fallback_report(
         q = v.get("quote")
         head = f"• **{nm}**"
         if q:
-            asof = f" [{q['asof']} 종가]" if q.get("asof") else ""
             head += (f": {q['close']:,} {q.get('icon', '')} "
-                     f"{q['direction']}{abs(q['change_pct'])}%{asof}")
+                     f"{q['direction']}{abs(q['change_pct'])}%")
         if v.get("context"):
             head += f" — {v['context']}"
         mention_lines.append(head)
@@ -317,44 +334,46 @@ def _fallback_report(
             mention_lines.append(f"  - [{n['title']}]({n['url']}){pub}")
     mentioned_stocks = "\n".join(mention_lines) or "추출 실패(LLM 필요)"
 
-    # ── 옵시디안용: 전사 전문 보존 (방송 내용 자체가 유일한 산출물이므로 자르지 않음)
-    md_parts = [
-        banner,
-        f"\n### 💹 주요 지수/자산 ({today})\n{idx_block}",
-        f"\n### 💼 보유종목 시세\n{hold_block}",
-        f"\n### 💼 보유종목 언급 체크 (문자열 매칭)\n{mention_block}",
-        f"\n### 📈 방송 언급 종목 · 관련 기사\n{mentioned_stocks}",
-    ]
+    # ── 옵시디안용: 화면 캡처 → 종목 → 뉴스링크 순서
+    idx_title = f"💹 주요 지표 ({idx_asof})" if idx_asof else "💹 주요 지표"
+    hold_title = f"💼 보유종목 시세 ({hold_asof})" if hold_asof else "💼 보유종목 시세"
+    md_parts = [banner]
     if material:
-        md_parts.append(f"\n### 📄 방송 자료화면 원문 (시간순)\n```\n{material}\n```")
+        md_parts.append(f"\n### 📄 방송 화면 캡처 판독 (시간순)\n```\n{material}\n```")
     else:
         md_parts.append(
-            "\n### 📄 방송 자료화면 원문\n"
+            "\n### 📄 방송 화면 캡처 판독\n"
             "비전 분석도 같은 사유로 실패해 자료화면 추출물이 없습니다."
         )
-    md_parts.append(f"\n### 🎙 음성 전사 (전문)\n```\n{transcript}\n```")
+    md_parts += [
+        f"\n### {idx_title}\n{idx_block}",
+        f"\n### {hold_title}\n{hold_block}",
+        f"\n### 💼 보유종목 언급 체크 (문자열 매칭)\n{mention_block}",
+        f"\n### 📈 방송 언급 종목 · 관련 뉴스\n{mentioned_stocks}",
+    ]
+    if transcript:
+        md_parts.append(f"\n### 🎙 음성 전사 (전문)\n```\n{transcript}\n```")
     md_parts.append(f"\n{settings['report']['disclaimer']}")
     markdown_report = "\n".join(md_parts)
 
-    # ── 텔레그램용: 지표·종목·기사링크를 먼저, 전사는 짧은 발췌만.
-    # 전사 원문을 텔레그램에 길게 쏟으면 가독성이 급격히 나빠진다 — 전문은
-    # 옵시디안 리포트(markdown_report)와 Actions 아티팩트에 그대로 보존된다.
-    tg_head = "\n".join([
+    # ── 텔레그램용: 지표 → 종목 → 뉴스링크. 전사는 켜져 있을 때만 짧게 덧붙인다.
+    telegram_text = "\n".join([
         banner,
-        f"\n💹 주요 지수/자산 ({today})\n{idx_block}",
-        f"\n💼 보유종목 시세\n{hold_block}",
+        f"\n{idx_title}\n{idx_block}",
+        f"\n{hold_title}\n{hold_block}",
         f"\n💼 보유종목 언급 체크\n{mention_block}",
-        f"\n📈 방송 언급 종목 · 관련 기사\n{mentioned_stocks}",
+        f"\n📈 방송 언급 종목 · 관련 뉴스\n{mentioned_stocks}",
     ])
-    room = settings["telegram"]["max_message_len"] - len(tg_head) - 400
-    budget = max(0, min(room, 1200))     # 발췌는 최대 1,200자
-    excerpt = transcript[:budget]
-    tail = "…(이하 생략 — 전문은 옵시디안 리포트·Actions 아티팩트 참조)" \
-        if len(transcript) > len(excerpt) else ""
-    telegram_text = f"{tg_head}\n\n🎙 음성 전사 발췌\n{excerpt}{tail}"
+    if transcript:
+        room = settings["telegram"]["max_message_len"] - len(telegram_text) - 400
+        budget = max(0, min(room, 1200))     # 발췌는 최대 1,200자
+        excerpt = transcript[:budget]
+        tail = "…(이하 생략 — 전문은 옵시디안 리포트·Actions 아티팩트 참조)" \
+            if len(transcript) > len(excerpt) else ""
+        telegram_text += f"\n\n🎙 음성 전사 발췌\n{excerpt}{tail}"
 
-    log.warning("열화 리포트 생성 (LLM 없이 원자료 기반): %s / 전사 %d자, 지수 %d건",
-                label, len(transcript), len(indices))
+    log.warning("열화 리포트 생성 (LLM 없이 원자료 기반): %s / 화면 %d장, 지표 %d건, 전사 %d자",
+                label, len(vision_results), len(indices), len(transcript))
     return {
         "title_keyword": "원자료시황",
         "telegram_text": telegram_text,
@@ -457,8 +476,10 @@ def generate_report(
 
     us_ctx = f"\n\n[오늘 미국 세션 리포트 (참고)]\n{us_context_md[:8000]}" if us_context_md else ""
 
+    src_desc = "방송 화면 캡처 판독 결과" + ("와 음성 전사" if transcript else "")
     prompt = f"""당신은 한국 개인투자자를 위한 시황 애널리스트입니다.
-삼프로TV {label} 방송({today})의 자료화면 추출물과 음성 전사, 그리고 API로 검증한 실제 시세를 바탕으로 데일리 리포트를 작성하세요.
+삼프로TV {label} 방송({today})의 {src_desc}, 그리고 API로 검증한 실제 시세를 바탕으로 데일리 리포트를 작성하세요.
+리포트의 핵심 축은 **① 방송 화면에서 읽은 내용 ② 종목 시세 ③ 관련 뉴스 링크** 입니다.
 
 {session_goal}
 
@@ -466,12 +487,12 @@ def generate_report(
 - 💹 주요 지수/자산 변동 섹션 포함 (아래 검증 시세 사용)
 - 💼 보유종목 언급 체크: 아래 보유/관심 종목이 방송에서 언급됐는지 확인. 언급됐으면 어떤 맥락인지, 안 됐으면 "언급 없음"으로.
 - 가격·등락률은 반드시 [검증 시세]를 우선하고, 화면 숫자는 검증 실패 시에만 "(방송 화면 기준)"을 붙여 사용
-- **모든 시세에는 "어느 시점 종가인지"를 반드시 함께 표기**하세요. 검증 시세의 `asof`
-  필드가 종가 기준일이고 `prev_close`가 그 전일 종가입니다. 등락률은 이 두 값의 비교
-  결과입니다. asof가 오늘이 아니면 최신 거래일 종가라는 뜻이니 날짜를 명시해 혼동을 막으세요.
+- **종가 기준일은 섹션 제목에 한 번만** 쓰세요 (예: `💹 주요 지표 (7/24 종가 기준)`).
+  줄마다 `[2026-07-24 종가]`처럼 반복하면 지저분해집니다 — 절대 줄 끝에 붙이지 마세요.
+  기준일은 검증 시세의 `asof` 필드를 쓰고, 항목별로 다르면 그 항목에만 예외 표기하세요.
 - **등락 아이콘을 반드시 붙이세요** — 각 시세의 `icon` 필드(📈 상승 / 📉 하락 / ➖ 보합)를
   그대로 사용하고, 형식은 다음을 따르세요:
-  `• 나스닥: 20,123.45 📈 ▲1.23% (7/24 종가)`
+  `• 나스닥: 20,123.45 📈 ▲1.23%`
   숫자에는 천단위 쉼표를 넣고, 목록은 `•` 불릿으로 정렬해 한눈에 읽히게 하세요.
 - 시세가 없는 항목(조회 실패·비상장 등)은 "조회 불가"로만 적고 **절대 숫자를 만들지 마세요**.
   특히 `nan`·`0` 같은 값을 시세처럼 쓰면 안 됩니다.
@@ -505,11 +526,9 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 [보유/관심 종목 검증 시세]
 {json.dumps(holdings_quotes, ensure_ascii=False)}
 
-[자료화면 추출물 (광고 제외, 시간순)]
+[방송 화면 캡처 판독 결과 (광고 제외, 시간순)]
 {_material_digest(vision_results)}
-
-[음성 전사]
-{transcript[:40000]}{us_ctx}"""
+{f"{chr(10)}[음성 전사]{chr(10)}" + transcript[:40000] if transcript else ""}{us_ctx}"""
 
     # LLM이 완전히 불가능해도(할당량·빌링·모델 오류) 리포트는 반드시 발행한다.
     # 캡처·전사·시세는 이미 확보돼 있으므로 그날 작업을 통째로 버리지 않는다.

@@ -28,15 +28,15 @@ HOLDINGS = {
 }
 
 INDICES = [
-    {"name": "나스닥", "ticker": "^IXIC", "market": "US",
-     "close": 20123.45, "change_pct": 1.23, "direction": "▲"},
-    {"name": "KOSPI", "ticker": "^KS11", "market": "KR",
-     "close": 3150.5, "change_pct": -0.42, "direction": "▼"},
+    {"name": "나스닥", "ticker": "^IXIC", "market": "US", "close": 20123.45,
+     "change_pct": 1.23, "direction": "▲", "icon": "📈", "asof": "2026-07-24"},
+    {"name": "KOSPI", "ticker": "^KS11", "market": "KR", "close": 3150.5,
+     "change_pct": -0.42, "direction": "▼", "icon": "📉", "asof": "2026-07-24"},
 ]
 
 HOLDINGS_QUOTES = [
-    {"name": "삼성전자", "ticker": "005930", "market": "KR",
-     "close": 88000, "change_pct": 2.1, "direction": "▲"},
+    {"name": "삼성전자", "ticker": "005930", "market": "KR", "close": 88000,
+     "change_pct": 2.1, "direction": "▲", "icon": "📈", "asof": "2026-07-24"},
 ]
 
 REQUIRED_KEYS = ("title_keyword", "telegram_text", "markdown_report")
@@ -197,6 +197,38 @@ AI반도체수급
     assert "| NVDA | 202.0 |" in data["markdown_report"]
     assert data["holdings_mentioned"][0]["mentioned"] is True
     assert '"미국 생산 확대"' in data["holdings_mentioned"][0]["context"]
+
+
+def test_quote_line_has_no_asof_suffix():
+    """줄 끝 '[2026-07-24 종가]'는 제거 — 기준일은 섹션 제목에만."""
+    q = {"name": "나스닥", "close": 20123.45, "change_pct": 1.23,
+         "direction": "▲", "icon": "📈", "asof": "2026-07-24"}
+    line = report_mod._quote_line(q)
+    assert line == "• 나스닥: 20,123.45 📈 ▲1.23%"
+    assert "종가]" not in line and "2026-07-24" not in line
+
+
+def test_asof_label_uses_most_common_date():
+    quotes = [{"asof": "2026-07-24"}, {"asof": "2026-07-24"}, {"asof": "2026-07-23"}]
+    assert report_mod._asof_label(quotes) == "7/24 종가 기준"
+    assert report_mod._asof_label([]) == ""
+
+
+def test_fallback_omits_transcript_section_when_disabled(tmp_path, llm_down):
+    """전사를 끄면 빈 '음성 전사' 섹션이 남지 않아야 한다."""
+    data = _generate(tmp_path, transcript="")
+    assert "음성 전사" not in data["markdown_report"]
+    assert "음성 전사" not in data["telegram_text"]
+
+
+def test_fallback_leads_with_screen_capture(tmp_path, llm_down):
+    """구성 축: 화면 캡처 → 지표 → 종목·뉴스."""
+    vision = [{"timestamp_sec": 65, "type": "자료화면", "text": "엔비디아 신고가"}]
+    md = _generate(tmp_path, transcript="", vision_results=vision)["markdown_report"]
+    cap, idx = md.find("방송 화면 캡처 판독"), md.find("주요 지표")
+    assert 0 < cap < idx                     # 화면 캡처가 지표보다 앞
+    assert "엔비디아 신고가" in md
+    assert "7/24 종가 기준" in md            # 기준일은 섹션 제목에만
 
 
 def test_sections_reject_non_sectioned_text():

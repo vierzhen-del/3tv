@@ -160,8 +160,14 @@ def run(args: argparse.Namespace) -> int:
         except Exception as e:
             log.error("Gemini 비전 분석 전체 실패(무시하고 전사만으로 진행): %s", e)
 
-    # 4. Whisper 음성 전사
-    transcript = transcribe(video, out_dir, settings["models"]["whisper"])
+    # 4. Whisper 음성 전사 (models.whisper_disabled=true면 생략)
+    #    끄면 리포트는 화면 캡처(자료화면) + 종목 시세 + 뉴스링크로만 구성된다.
+    #    45분 오디오 전사에 약 12분이 걸려 런타임의 대부분을 차지했다.
+    if settings["models"].get("whisper_disabled"):
+        log.info("whisper_disabled=true → 음성 전사 생략 (화면 캡처 기반으로 진행)")
+        transcript = ""
+    else:
+        transcript = transcribe(video, out_dir, settings["models"]["whisper"])
 
     # 4.5 방송 종료 감지: 진행자가 보드형 광고 소개를 시작하면 이후 내용 제외
     if session_cfg.get("end_on_host_ad"):
