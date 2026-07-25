@@ -1,0 +1,32 @@
+# 공지 전송 — 변경사항 요약 등을 텔레그램으로 보낸다 (수동 실행 전용).
+# 리포트 발송과 같은 notify_telegram 모듈을 쓰므로 토큰 처리가 동일하다.
+name: notify
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: "전송할 메시지 파일 경로 (repo 기준)"
+        required: false
+        default: "docs/notices/latest.md"
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 전체 requirements는 불필요 — 전송에 쓰는 최소 의존성만
+      - run: pip install requests PyYAML python-dotenv
+
+      - name: Send notice
+        env:
+          PYTHONPATH: src
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/send_notice.py "${{ github.event.inputs.file || 'docs/notices/latest.md' }}"
