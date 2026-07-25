@@ -87,6 +87,16 @@ jobs:
           fi
           python -m threetv.main --session kr --vod-url "$VOD" $FLAGS
 
+      # 리포트 본문을 로그로 — 캡처 2줄 포맷·화면 원문 보존 등을 아티팩트 없이 바로 확인
+      - name: Print report (debug)
+        if: always()
+        run: |
+          for f in $(find output -name report.md 2>/dev/null); do
+            echo "===== $f ====="
+            head -c 6000 "$f"
+            echo
+          done
+
       - name: Upload analysis artifacts (debug)
         if: always()
         uses: actions/upload-artifact@v4
