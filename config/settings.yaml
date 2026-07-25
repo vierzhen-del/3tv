@@ -162,3 +162,10 @@ obsidian:
 
 notion:
   enabled: false            # NOTION_API_KEY/NOTION_PARENT_ID 등록 후 true로
+
+# 리포트 6번 섹션 — 전일 수급주체 동향 / 순매수·순매도 top10 / ETF 등락 (pykrx)
+# 전부 best-effort: 조회 실패 시 해당 항목만 '조회 실패'로 표기되고 리포트는 계속 발행된다.
+flows:
+  enabled: true
+  investor: "외국인"        # 순매수 top10 기준 주체 (개인/기관합계 등으로 변경 가능)
+  top_n: 10

@@ -247,6 +247,32 @@ def _briefing_lines(news_briefing: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _flow_lines(flows: dict | None) -> str:
+    """수급 데이터를 사람이 읽는 줄로 (LLM 요약 실패 시에도 원자료가 남게)."""
+    if not flows:
+        return ""
+    parts: list[str] = []
+    inv = flows.get("investors") or []
+    if inv:
+        parts.append("• 전일 수급주체 순매수(억원): " + ", ".join(
+            f"{r['investor']} {r['net']:+,.0f}" for r in inv[:8]))
+    top = flows.get("top") or {}
+    if top.get("buy"):
+        parts.append(f"• {top.get('investor','')} 순매수 TOP: " + ", ".join(
+            f"{r['name']}({r['net']:+,.0f})" for r in top["buy"][:10]))
+    if top.get("sell"):
+        parts.append(f"• {top.get('investor','')} 순매도 TOP: " + ", ".join(
+            f"{r['name']}({r['net']:+,.0f})" for r in top["sell"][:10]))
+    etf = flows.get("etf") or {}
+    if etf.get("up"):
+        parts.append("• ETF 상승 TOP: " + ", ".join(
+            f"{r['name']}({r['pct']:+.2f}%)" for r in etf["up"][:10]))
+    if etf.get("down"):
+        parts.append("• ETF 하락 TOP: " + ", ".join(
+            f"{r['name']}({r['pct']:+.2f}%)" for r in etf["down"][:10]))
+    return "\n".join(parts)
+
+
 def _capture_blocks(
     vision_results: list[dict],
     verified_mentions: list[dict],
@@ -371,6 +397,7 @@ def _fallback_report(
     holdings_quotes: list[dict],
     reason: str,
     news_briefing: list[dict] | None = None,
+    flows: dict | None = None,
 ) -> dict:
     """LLM 없이 원자료만으로 리포트 생성 (LLM 완전 불가 시 열화 경로).
 
@@ -447,6 +474,9 @@ def _fallback_report(
         md_parts.append(
             f"\n### 📰 뉴스 브리핑 (수집 원문 — AI 요약 없음)\n{briefing_block}"
         )
+    flow_block = _flow_lines(flows)
+    if flow_block:
+        md_parts.append(f"\n### 🔎 수급·변동성 (원자료)\n{flow_block}")
     if transcript:
         md_parts.append(f"\n### 🎙 음성 전사 (전문)\n```\n{transcript}\n```")
     md_parts.append(f"\n{settings['report']['disclaimer']}")
@@ -521,6 +551,7 @@ def generate_report(
     out_dir: Path,
     us_context_md: str = "",
     news_briefing: list[dict] | None = None,
+    flows: dict | None = None,
 ) -> dict:
     """최종 리포트 생성.
 
@@ -664,6 +695,7 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 [화면 캡처 원문 판독 (광고 제외, 시간순)]
 {_material_digest(vision_results)}
 {f"{chr(10)}[뉴스 브리핑 기사 — 겹치는 것 묶어 3줄 요약]{chr(10)}" + _briefing_lines(news_briefing) if news_briefing else ""}
+{f"{chr(10)}[수급 데이터 (단위 억원, 없는 항목은 '조회 실패'로만 표기)]{chr(10)}" + json.dumps(flows, ensure_ascii=False) if flows else ""}
 {f"{chr(10)}[음성 전사]{chr(10)}" + transcript[:40000] if transcript else ""}{us_ctx}"""
 
     # LLM이 완전히 불가능해도(할당량·빌링·모델 오류) 리포트는 반드시 발행한다.
@@ -680,7 +712,7 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
         data = _fallback_report(
             settings, session, vision_results, transcript, indices,
             verified_mentions, holdings_data, holdings_quotes, reason=str(e)[:200],
-            news_briefing=news_briefing,
+            news_briefing=news_briefing, flows=flows,
         )
 
     out_file = out_dir / "report.json"

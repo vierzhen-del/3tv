@@ -200,6 +200,9 @@ def run(args: argparse.Namespace) -> int:
         limit=settings.get("news", {}).get("briefing_limit", 20),
     )
 
+    # 5.6 리포트 6번 섹션용 수급 데이터 (전일 수급주체·순매수 top10·ETF)
+    flows = market.fetch_flows(settings.get("flows"))
+
     # kr 세션은 오늘 아침 us 리포트를 컨텍스트로 사용
     us_context = ""
     if session == "kr" and not args.skip_archive:
@@ -210,6 +213,7 @@ def run(args: argparse.Namespace) -> int:
         settings, session, vision_results, transcript,
         indices, verified, holdings_data, holdings_quotes,
         out_dir, us_context_md=us_context, news_briefing=news_briefing,
+        flows=flows,
     )
 
     # 7. 전송 (텔레그램 → 카카오, best-effort)
