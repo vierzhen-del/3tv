@@ -158,6 +158,46 @@ def test_successful_llm_path_unchanged(tmp_path, monkeypatch):
     assert "AI 요약 없음" not in data["markdown_report"]
 
 
+def test_parses_json_with_literal_newlines_in_strings():
+    """2026-07-25 실장애 재현: LLM이 마크다운 본문에 실제 개행을 넣어 보낸 응답.
+
+    strict=True면 'Invalid control character'로 죽어 리포트 전체가 버려졌다.
+    """
+    raw = (
+        '{"title_keyword": "반도체강세",\n'
+        ' "telegram_text": "첫 줄\n둘째 줄\n셋째 줄",\n'
+        ' "markdown_report": "## 제목\n\n- 항목1\n- 항목2\n\n표\t들여쓰기",\n'
+        ' "holdings_mentioned": []}'
+    )
+    data = report_mod._parse_json_obj(raw)
+    assert data["title_keyword"] == "반도체강세"
+    assert "둘째 줄" in data["telegram_text"]
+    assert "항목1" in data["markdown_report"]
+
+
+def test_multiline_llm_response_uses_llm_not_fallback(tmp_path, monkeypatch):
+    """개행 포함 응답이 열화 경로로 새지 않고 정상 LLM 리포트로 채택돼야 한다."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (
+        '{"title_keyword": "AI반도체",\n'
+        ' "telegram_text": "🇺🇸 미국 시황\n- 나스닥 상승\n- SOX 강세",\n'
+        ' "markdown_report": "## 미국 시황\n\n다우 ▲0.27%\n나스닥 ▲1.30%",\n'
+        ' "holdings_mentioned": [{"name": "삼성전자", "mentioned": true, "context": "언급"}]}'
+    ))
+    data = _generate(tmp_path, transcript="방송 전사")
+    assert data["title_keyword"] == "AI반도체"
+    assert "AI 요약 없음" not in data["markdown_report"]   # 열화 경로 아님
+    assert "나스닥 ▲1.30%" in data["markdown_report"]
+
+
+def test_vision_parses_json_with_literal_newlines():
+    """vision도 동일 — 슬라이드 표 텍스트는 여러 줄이라 같은 문제가 난다."""
+    from threetv import vision as vision_mod
+    raw = '[{"index": 0, "type": "자료화면", "text": "다우 +0.27%\n나스닥 +1.30%"}]'
+    got = vision_mod._parse_json_array(raw)
+    assert got[0]["type"] == "자료화면"
+    assert "나스닥" in got[0]["text"]
+
+
 def test_missing_required_key_falls_back(tmp_path, monkeypatch):
     """LLM이 응답했으나 필수 키가 비면 열화 경로로 — 빈 리포트 발행 방지."""
     monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: json.dumps(

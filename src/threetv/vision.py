@@ -59,6 +59,12 @@ def _client():
 
 
 def _parse_json_array(text: str) -> list[dict]:
+    """Gemini 응답에서 JSON 배열을 추출.
+
+    strict=False — 자료화면에서 읽은 표/슬라이드 텍스트는 여러 줄이라 모델이
+    문자열 값 안에 실제 개행을 그대로 넣는 경우가 많다. strict 모드면 배치 전체가
+    'Invalid control character'로 버려진다 (report.py의 _parse_json_obj와 동일 이유).
+    """
     text = text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -66,7 +72,7 @@ def _parse_json_array(text: str) -> list[dict]:
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end == -1:
         raise ValueError(f"JSON 배열을 찾지 못함: {text[:200]}")
-    return json.loads(text[start : end + 1])
+    return json.loads(text[start : end + 1], strict=False)
 
 
 def _is_quota_error(e: Exception) -> bool:

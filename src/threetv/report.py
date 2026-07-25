@@ -29,6 +29,13 @@ def _client():
 
 
 def _parse_json_obj(text: str) -> dict:
+    """LLM 응답에서 JSON 객체를 추출.
+
+    strict=False가 핵심 — 리포트 본문(markdown_report)은 여러 줄짜리 마크다운이라
+    LLM이 문자열 값 안에 `\\n` 이스케이프 대신 **실제 개행**을 그대로 넣는 일이 흔하다.
+    기본(strict=True) json.loads는 이를 'Invalid control character'로 거부해
+    리포트 전체가 버려진다(2026-07-25 실측: 45분 방송 리포트가 이 이유로 열화 처리됨).
+    """
     text = text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -36,7 +43,7 @@ def _parse_json_obj(text: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError(f"JSON 객체를 찾지 못함: {text[:200]}")
-    return json.loads(text[start : end + 1])
+    return json.loads(text[start : end + 1], strict=False)
 
 
 def _call_claude(model: str, prompt: str, max_tokens: int = 8000) -> str:
