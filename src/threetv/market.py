@@ -11,14 +11,20 @@ from datetime import datetime, timedelta
 from .common import KST, log
 
 
-def _fmt_quote(name: str, ticker: str, market: str, close: float, pct: float) -> dict:
+def _fmt_quote(
+    name: str, ticker: str, market: str, close: float, pct: float,
+    asof: str = "", prev_close: float | None = None,
+) -> dict:
+    """시세 1건. asof/prev_close는 '어느 시점 종가인지'를 리포트에 명시하기 위한 것."""
     return {
         "name": name,
         "ticker": ticker,
         "market": market,
         "close": round(close, 2),
+        "prev_close": round(prev_close, 2) if prev_close is not None else None,
         "change_pct": round(pct, 2),
         "direction": "▲" if pct > 0 else ("▼" if pct < 0 else "-"),
+        "asof": asof,      # 종가 기준일 (YYYY-MM-DD)
     }
 
 
@@ -33,7 +39,8 @@ def us_quote(ticker: str, name: str | None = None) -> dict | None:
         close = float(hist["Close"].iloc[-1])
         prev = float(hist["Close"].iloc[-2])
         pct = (close - prev) / prev * 100
-        return _fmt_quote(name or ticker, ticker, "US", close, pct)
+        asof = str(hist.index[-1].date())
+        return _fmt_quote(name or ticker, ticker, "US", close, pct, asof, prev)
     except Exception as e:
         log.debug("yfinance 조회 실패 %s: %s", ticker, e)
         return None
@@ -82,7 +89,8 @@ def kr_quote(name_or_code: str, name: str | None = None) -> dict | None:
         prev = float(df["종가"].iloc[-2])
         pct = (close - prev) / prev * 100
         disp_name = name or stock.get_market_ticker_name(code)
-        return _fmt_quote(disp_name, code, "KR", close, pct)
+        asof = str(df.index[-1].date())
+        return _fmt_quote(disp_name, code, "KR", close, pct, asof, prev)
     except Exception as e:
         log.debug("pykrx 조회 실패 %s: %s", code, e)
         return None

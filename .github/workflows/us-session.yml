@@ -24,6 +24,11 @@ on:
         description: "artifact 이름 구분용 태그 (예: full, trim) — 여러 실행 비교 시 유용"
         required: false
         default: ""
+      notify:
+        description: "VOD 테스트 결과를 텔레그램/카카오로 실제 전송 (기본: 전송 안 함)"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   run:
@@ -69,14 +74,17 @@ jobs:
           TRIM_DURATION="${{ github.event.inputs.trim_duration }}"
           if [ -z "$VOD" ]; then
             python -m threetv.main --session us
-          elif [ -n "$TRIM_START" ]; then
-            python -m threetv.main --session us --vod-url "$VOD" \
-              --trim-start "$TRIM_START" --trim-duration "$TRIM_DURATION" \
-              --skip-notify --skip-archive
-          else
-            python -m threetv.main --session us --vod-url "$VOD" \
-              --skip-notify --skip-archive
+            exit $?
           fi
+          # VOD 테스트: 기본은 무발송(--skip-notify), notify=true면 텔레그램/카카오 전송
+          FLAGS="--skip-archive"
+          if [ "${{ github.event.inputs.notify }}" != "true" ]; then
+            FLAGS="$FLAGS --skip-notify"
+          fi
+          if [ -n "$TRIM_START" ]; then
+            FLAGS="$FLAGS --trim-start $TRIM_START --trim-duration $TRIM_DURATION"
+          fi
+          python -m threetv.main --session us --vod-url "$VOD" $FLAGS
 
       - name: Upload analysis artifacts (debug)
         if: always()
