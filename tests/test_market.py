@@ -48,6 +48,24 @@ def test_pair_from_closes_needs_two_points():
     assert market._pair_from_closes(pd.Series([100.0], index=_idx(1))) is None
 
 
+def test_pair_from_closes_rejects_large_date_gap():
+    """2026-07-25 실측: 결측이 많은 시계열의 두 점이 멀면 등락률이 터무니없어진다.
+
+    같은 날 KOSPI ▲4.4% / KOSPI200 ▼7.18% 로 찍힌 원인.
+    """
+    idx = pd.to_datetime(["2026-06-01", "2026-07-24"])   # 53일 간격
+    s = pd.Series([1000.0, 1080.0], index=idx)
+    assert market._pair_from_closes(s) is None
+
+
+def test_pair_from_closes_allows_weekend_gap():
+    """금→월(3일)은 정상 전일대비로 인정해야 한다."""
+    idx = pd.to_datetime(["2026-07-24", "2026-07-27"])
+    s = pd.Series([100.0, 101.0], index=idx)
+    got = market._pair_from_closes(s)
+    assert got is not None and got[0] == 101.0
+
+
 def test_pair_from_closes_rejects_zero_prev():
     """0으로 나누면 inf/nan이 된다."""
     s = pd.Series([0.0, 110.0], index=_idx(2))

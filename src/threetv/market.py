@@ -40,11 +40,19 @@ def _fmt_quote(
     }
 
 
+MAX_GAP_DAYS = 7   # 금→월(3일) + 연휴를 흡수하되 데이터 공백은 걸러낼 정도
+
+
 def _pair_from_closes(closes) -> tuple[float, float, str] | None:
     """종가 시계열에서 (최근 종가, 전일 종가, 기준일)을 뽑는다.
 
     NaN 행을 먼저 버리는 것이 핵심 — 휴장일·결측·스로틀링으로 생긴 NaN 행이
     마지막에 오면 그 값이 그대로 종가로 쓰인다.
+
+    ⚠️ 유효한 두 종가의 **날짜 간격도 검사**한다. 결측이 많은 시계열은 dropna 후
+    남은 두 점이 며칠~몇 주 떨어져 있을 수 있고, 그걸 '전일대비'로 계산하면
+    터무니없는 등락률이 나온다 — 2026-07-25 실측: 같은 날 KOSPI ▲4.4% 인데
+    KOSPI200 ▼7.18% 로 찍혔다(물리적으로 불가능). 간격이 크면 조회 실패로 처리한다.
     """
     s = closes.dropna()
     if len(s) < 2:
@@ -52,10 +60,17 @@ def _pair_from_closes(closes) -> tuple[float, float, str] | None:
     close, prev = float(s.iloc[-1]), float(s.iloc[-2])
     if not (math.isfinite(close) and math.isfinite(prev)) or prev == 0:
         return None
+    asof = ""
     try:
-        asof = str(s.index[-1].date())
+        d_last, d_prev = s.index[-1].date(), s.index[-2].date()
+        asof = str(d_last)
+        gap = (d_last - d_prev).days
+        if gap > MAX_GAP_DAYS:
+            log.warning("종가 간격 %d일 — 전일대비로 볼 수 없어 제외 (%s vs %s)",
+                        gap, d_prev, d_last)
+            return None
     except Exception:
-        asof = ""
+        pass
     return close, prev, asof
 
 
@@ -217,6 +232,15 @@ def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
     order = {t: i for i, t in enumerate(indices_cfg)}
     quotes.sort(key=lambda q: order.get(q["ticker"], 999))
     log.info("주요 지표 조회: %d/%d건 성공", len(quotes), len(indices_cfg))
+
+    # 기준일이 섞여 있으면 섹션 제목의 단일 기준일 표기가 오해를 부른다 — 로그로 남긴다
+    dates = [q["asof"] for q in quotes if q.get("asof")]
+    if dates:
+        common = max(set(dates), key=dates.count)
+        stale = [f"{q['name']}({q['asof']})" for q in quotes
+                 if q.get("asof") and q["asof"] != common]
+        if stale:
+            log.warning("기준일 불일치 (대표 %s): %s", common, ", ".join(stale[:10]))
     return quotes
 
 
@@ -257,6 +281,137 @@ def fetch_holdings_quotes(holdings: list[dict]) -> list[dict]:
         if q:
             quotes.append(q)
     return quotes
+
+
+# ─────────────────────── 수급 동향 (전일 국내) ───────────────────────
+
+def _recent_biz_range(days: int = 10) -> tuple[str, str]:
+    end = datetime.now(KST)
+    return (end - timedelta(days=days)).strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
+def kr_investor_flows(market: str = "KOSPI") -> list[dict]:
+    """전일 수급주체별 순매수 (기관·외국인·개인 등).
+
+    반환: [{"investor": "외국인", "net": 1234.5}] — 단위 억원, 순매수 큰 순.
+    pykrx 실패·컬럼 변경에도 리포트가 죽지 않도록 전부 best-effort.
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return []
+    start, end = _recent_biz_range()
+    try:
+        df = stock.get_market_trading_value_by_investor(start, end, market)
+        if df is None or not len(df):
+            return []
+        col = next((c for c in ("순매수", "순매수거래대금") if c in df.columns), None)
+        if col is None:
+            log.warning("수급 동향: 순매수 컬럼을 찾지 못함 (%s)", list(df.columns)[:6])
+            return []
+        rows = []
+        for name, val in df[col].items():
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(v) or str(name).strip() in ("전체", "합계"):
+                continue
+            rows.append({"investor": str(name).strip(), "net": round(v / 1e8, 1)})
+        rows.sort(key=lambda r: r["net"], reverse=True)
+        log.info("전일 수급주체 동향: %d개 주체 (%s)", len(rows), market)
+        return rows
+    except Exception as e:
+        log.warning("수급 동향 조회 실패: %s", e)
+        return []
+
+
+def kr_top_net_purchases(investor: str = "외국인", n: int = 10,
+                         market: str = "KOSPI") -> dict:
+    """수급주체 기준 순매수 상위 n / 순매도 상위 n 종목.
+
+    반환: {"investor":..., "buy":[{name, net}], "sell":[{name, net}]} (단위 억원)
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return {}
+    start, end = _recent_biz_range()
+    try:
+        df = stock.get_market_net_purchases_of_equities(start, end, market, investor)
+        if df is None or not len(df):
+            return {}
+        col = next((c for c in ("순매수거래대금", "순매수") if c in df.columns), None)
+        name_col = next((c for c in ("종목명",) if c in df.columns), None)
+        if col is None:
+            log.warning("순매수 상위: 컬럼 확인 실패 (%s)", list(df.columns)[:6])
+            return {}
+        items = []
+        for idx, row in df.iterrows():
+            try:
+                v = float(row[col])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not math.isfinite(v):
+                continue
+            nm = str(row[name_col]).strip() if name_col else str(idx).strip()
+            items.append({"name": nm, "net": round(v / 1e8, 1)})
+        items.sort(key=lambda r: r["net"], reverse=True)
+        result = {"investor": investor, "buy": items[:n], "sell": items[-n:][::-1]}
+        log.info("%s 순매수 상위 %d / 순매도 상위 %d",
+                 investor, len(result["buy"]), len(result["sell"]))
+        return result
+    except Exception as e:
+        log.warning("순매수 상위 조회 실패(%s): %s", investor, e)
+        return {}
+
+
+def kr_etf_top_movers(n: int = 10) -> dict:
+    """전일 ETF 등락 상위/하위 (거래대금 있는 종목 기준).
+
+    반환: {"up":[{name, pct}], "down":[{name, pct}]}
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return {}
+    start, end = _recent_biz_range()
+    try:
+        df = stock.get_etf_price_change_by_ticker(start, end)
+        if df is None or not len(df):
+            return {}
+        pct_col = next((c for c in ("등락률",) if c in df.columns), None)
+        if pct_col is None:
+            log.warning("ETF 등락: 컬럼 확인 실패 (%s)", list(df.columns)[:6])
+            return {}
+        items = []
+        for idx, row in df.iterrows():
+            try:
+                v = float(row[pct_col])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not math.isfinite(v) or v == 0:
+                continue
+            nm = str(row.get("종목명") or idx).strip()
+            items.append({"name": nm, "pct": round(v, 2)})
+        items.sort(key=lambda r: r["pct"], reverse=True)
+        result = {"up": items[:n], "down": items[-n:][::-1]}
+        log.info("ETF 등락 상위 %d / 하위 %d", len(result["up"]), len(result["down"]))
+        return result
+    except Exception as e:
+        log.warning("ETF 등락 조회 실패: %s", e)
+        return {}
+
+
+def fetch_flows(cfg: dict | None = None) -> dict:
+    """6번 섹션용 수급 데이터 묶음 (전부 best-effort — 실패해도 빈 dict)."""
+    cfg = cfg or {}
+    if not cfg.get("enabled", True):
+        return {}
+    n = int(cfg.get("top_n", 10))
+    investor = cfg.get("investor", "외국인")
+    return {
+        "investors": kr_investor_flows(),
+        "top": kr_top_net_purchases(investor=investor, n=n),
+        "etf": kr_etf_top_movers(n=n),
+    }
 
 
 # ─────────────────────────── 관련 기사 링크 ───────────────────────────
