@@ -58,6 +58,9 @@ jobs:
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          # pykrx 회원 로그인 — 미전달 시 익명 요청으로 떨어져 국내 종목 시세가 빈다
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_PARENT_ID: ${{ secrets.NOTION_PARENT_ID }}
         run: |

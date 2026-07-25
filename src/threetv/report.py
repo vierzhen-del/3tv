@@ -13,6 +13,7 @@ frames.vision_max_requests 예산(하루 20요청) 안에서 여유분으로 흡
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .common import env_token, log, now_kst
@@ -96,7 +97,13 @@ def _call_llm(models: dict, prompt: str, max_tokens: int = 8000) -> str:
         if not fallback or fallback == gemini_model:
             raise
         log.warning("Gemini %s 실패 → %s 재시도: %s", gemini_model, fallback, e)
-        return _call_gemini(fallback, prompt, max_tokens)
+        try:
+            return _call_gemini(fallback, prompt, max_tokens)
+        except Exception as e2:
+            # 어떤 모델이 왜 죽었는지 상위 열화 경로 로그에 남도록 사유를 합쳐 올린다
+            raise RuntimeError(
+                f"Gemini {gemini_model}·{fallback} 모두 실패: {e2}"
+            ) from e2
 
 
 def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> str:
@@ -116,6 +123,131 @@ def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> st
         lines.append(" ".join(parts))
     digest = "\n".join(lines)
     return digest[:limit_chars]
+
+
+def _quote_line(q: dict) -> str:
+    return f"- {q['name']}: {q['close']:,} ({q['direction']}{abs(q['change_pct'])}%)"
+
+
+def _mentions_holding(needle: str, hay_lower: str) -> bool:
+    """보유종목명/alias가 텍스트에 등장하는지.
+
+    ASCII 티커·영문명(MU, TSLA, Tesla)은 **영숫자에 인접하지 않을 때만** 인정한다.
+    - 'must'/'museum'이 'MU'로 잘못 걸리는 것을 막고,
+    - 한국어 전사 특성상 조사가 바로 붙는 'Tesla도', 'TSLA는'은 정상 인정한다.
+      (`\\b`는 한글도 word 문자로 봐서 'Tesla도'를 걸러버리므로 쓸 수 없다)
+    한글명은 조사가 붙어 나오므로(삼성전자'가') 부분문자열 매칭이 맞다.
+    """
+    n = needle.lower()
+    if n.isascii():
+        pattern = rf"(?<![a-z0-9]){re.escape(n)}(?![a-z0-9])"
+        return re.search(pattern, hay_lower) is not None
+    return n in hay_lower
+
+
+def _match_holdings_mentions(holdings_data: dict, haystack: str) -> list[dict]:
+    """보유/관심 종목 언급 여부를 문자열 매칭으로 판정 (LLM 불필요).
+
+    generate_report()가 LLM에게 시키는 것과 같은 형태
+    [{name, mentioned, context}] 를 반환한다.
+    """
+    hay_lower = haystack.lower()
+    result: list[dict] = []
+    for h in holdings_data["holdings"] + holdings_data["watchlist"]:
+        name = (h.get("name") or "").strip()
+        if not name:
+            continue
+        # 티커도 매칭 대상 — 방송 자료화면·발언에 'TSLA', '005930'처럼 그대로 나온다
+        needles = [name, str(h.get("ticker") or "")]
+        needles += [str(a) for a in (h.get("aliases") or []) if a]
+        hit = next((n for n in needles if n and _mentions_holding(n, hay_lower)), None)
+        result.append({
+            "name": name,
+            "mentioned": hit is not None,
+            "context": f"'{hit}' 방송 언급 (자동 문자열 매칭)" if hit else None,
+        })
+    return result
+
+
+def _fallback_report(
+    settings: dict,
+    session: str,
+    vision_results: list[dict],
+    transcript: str,
+    indices: list[dict],
+    verified_mentions: list[dict],
+    holdings_data: dict,
+    holdings_quotes: list[dict],
+    reason: str,
+) -> dict:
+    """LLM 없이 원자료만으로 리포트 생성 (LLM 완전 불가 시 열화 경로).
+
+    Whisper 전사(로컬 추론)와 yfinance/pykrx 시세는 API 키·할당량과 무관하게
+    항상 확보되므로, AI 요약이 불가능해도 이 둘만으로 유용한 리포트가 된다.
+    반환 형태는 generate_report()와 동일해 호출 측(전송·아카이브)이 그대로 동작한다.
+    """
+    label = settings["sessions"][session]["label"]
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+    material = _material_digest(vision_results)
+    holdings_mentioned = _match_holdings_mentions(
+        holdings_data, f"{transcript}\n{material}"
+    )
+
+    banner = (
+        "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
+        f"LLM 호출이 모두 실패해(사유: {reason}) 방송 음성 전사와 "
+        "API 검증 시세만으로 자동 생성했습니다. 요약·전망 해석은 포함되지 않습니다."
+    )
+
+    idx_block = "\n".join(_quote_line(q) for q in indices) or "- 조회 실패"
+    hold_block = "\n".join(_quote_line(q) for q in holdings_quotes) or "- 조회 실패"
+    mention_block = "\n".join(
+        f"- {m['name']}: {'✅ ' + (m['context'] or '언급') if m['mentioned'] else '언급 없음'}"
+        for m in holdings_mentioned
+    ) or "- 대조할 보유종목 없음"
+    named = [v.get("name") for v in verified_mentions if v.get("name")]
+    mentioned_stocks = ", ".join(named) if named else "추출 실패(LLM 필요)"
+
+    # ── 옵시디안용: 전사 전문 보존 (방송 내용 자체가 유일한 산출물이므로 자르지 않음)
+    md_parts = [
+        banner,
+        f"\n### 💹 주요 지수/자산 ({today})\n{idx_block}",
+        f"\n### 💼 보유종목 시세\n{hold_block}",
+        f"\n### 💼 보유종목 언급 체크 (문자열 매칭)\n{mention_block}",
+        f"\n### 📈 방송 언급 종목\n{mentioned_stocks}",
+    ]
+    if material:
+        md_parts.append(f"\n### 📄 방송 자료화면 원문 (시간순)\n```\n{material}\n```")
+    else:
+        md_parts.append(
+            "\n### 📄 방송 자료화면 원문\n"
+            "비전 분석도 같은 사유로 실패해 자료화면 추출물이 없습니다."
+        )
+    md_parts.append(f"\n### 🎙 음성 전사 (전문)\n```\n{transcript}\n```")
+    md_parts.append(f"\n{settings['report']['disclaimer']}")
+    markdown_report = "\n".join(md_parts)
+
+    # ── 텔레그램용: 1건 한도 안에서 전사를 최대한 (전문은 옵시디안·아티팩트에)
+    tg_head = "\n".join([
+        banner,
+        f"\n💹 주요 지수/자산 ({today})\n{idx_block}",
+        f"\n💼 보유종목 시세\n{hold_block}",
+        f"\n💼 보유종목 언급 체크\n{mention_block}",
+    ])
+    budget = settings["telegram"]["max_message_len"] - len(tg_head) - 400
+    excerpt = transcript[:budget] if budget > 0 else ""
+    tail = "…(이하 생략 — 전문은 옵시디안 리포트·Actions 아티팩트 참조)" \
+        if len(transcript) > len(excerpt) else ""
+    telegram_text = f"{tg_head}\n\n🎙 음성 전사 발췌\n{excerpt}{tail}"
+
+    log.warning("열화 리포트 생성 (LLM 없이 원자료 기반): %s / 전사 %d자, 지수 %d건",
+                label, len(transcript), len(indices))
+    return {
+        "title_keyword": "원자료시황",
+        "telegram_text": telegram_text,
+        "markdown_report": markdown_report,
+        "holdings_mentioned": holdings_mentioned,
+    }
 
 
 def extract_mentions(
@@ -227,10 +359,19 @@ JSON 객체로만 답하세요:
 [음성 전사]
 {transcript[:40000]}{us_ctx}"""
 
-    data = _parse_json_obj(_call_llm(settings["models"], prompt, max_tokens=12000))
-    for key in ("title_keyword", "telegram_text", "markdown_report"):
-        if not data.get(key):
-            raise RuntimeError(f"리포트 생성 결과에 {key} 누락")
+    # LLM이 완전히 불가능해도(할당량·빌링·모델 오류) 리포트는 반드시 발행한다.
+    # 캡처·전사·시세는 이미 확보돼 있으므로 그날 작업을 통째로 버리지 않는다.
+    try:
+        data = _parse_json_obj(_call_llm(settings["models"], prompt, max_tokens=12000))
+        for key in ("title_keyword", "telegram_text", "markdown_report"):
+            if not data.get(key):
+                raise RuntimeError(f"리포트 생성 결과에 {key} 누락")
+    except Exception as e:
+        log.error("LLM 리포트 생성 실패 → 원자료 기반 열화 리포트로 전환: %s", e)
+        data = _fallback_report(
+            settings, session, vision_results, transcript, indices,
+            verified_mentions, holdings_data, holdings_quotes, reason=str(e)[:200],
+        )
 
     out_file = out_dir / "report.json"
     out_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
