@@ -12,7 +12,11 @@ import pytest
 from threetv import report as report_mod
 
 SETTINGS = {
-    "sessions": {"us": {"label": "미국 시황"}, "kr": {"label": "한국 시황"}},
+    "sessions": {
+        "us": {"label": "미국 시황", "start_kst": "05:55"},
+        "kr": {"label": "한국 시황", "start_kst": "07:45",
+               "verbatim_window": ["07:45", "08:10"]},
+    },
     "report": {"disclaimer": "※ 투자 참고용입니다."},
     "telegram": {"max_message_len": 4000},
     "models": {"gemini": "g", "gemini_fallback": "gl", "claude_disabled": True},
@@ -141,7 +145,7 @@ def test_fallback_notes_empty_vision(tmp_path, llm_down):
 def test_fallback_includes_material_digest_when_available(tmp_path, llm_down):
     vision = [{"timestamp_sec": 65, "type": "자료화면", "text": "엔비디아 신고가"}]
     md = _generate(tmp_path, transcript="음성", vision_results=vision)["markdown_report"]
-    assert "[01:05]" in md and "엔비디아 신고가" in md
+    assert "05:56" in md and "엔비디아 신고가" in md
 
 
 SECTIONED = """===TITLE===
@@ -225,10 +229,55 @@ def test_fallback_leads_with_screen_capture(tmp_path, llm_down):
     """구성 축: 화면 캡처 → 지표 → 종목·뉴스."""
     vision = [{"timestamp_sec": 65, "type": "자료화면", "text": "엔비디아 신고가"}]
     md = _generate(tmp_path, transcript="", vision_results=vision)["markdown_report"]
-    cap, idx = md.find("방송 화면 캡처 판독"), md.find("주요 지표")
+    cap, idx = md.find("방송 화면 캡처"), md.find("주요 지표")
     assert 0 < cap < idx                     # 화면 캡처가 지표보다 앞
     assert "엔비디아 신고가" in md
     assert "7/24 종가 기준" in md            # 기준일은 섹션 제목에만
+
+
+def test_capture_uses_short_clock_time(tmp_path, llm_down):
+    """캡처 시각은 방송 표시시각 'HH:MM'으로 짧게 (us 시작 05:55 + 8분)."""
+    vision = [{"timestamp_sec": 8 * 60, "type": "자료화면", "text": "메타 관련 보도"}]
+    md = _generate(tmp_path, transcript="", vision_results=vision)["markdown_report"]
+    assert "06:03" in md
+    assert "[08:00]" not in md and "480" not in md
+
+
+def test_capture_two_lines_with_news_link(tmp_path, llm_down):
+    """캡처당 2줄 — ① 시각·종목 ② 관련 기사 링크."""
+    vision = [{"timestamp_sec": 8 * 60, "type": "자료화면", "text": "엔비디아 신고가 경신",
+               "stocks": [{"name": "엔비디아", "market": "US"}]}]
+    ver = [{"name": "엔비디아", "market": "US", "quote": None,
+            "news": [{"title": "NVDA record", "url": "https://news/nvda", "publisher": "Reuters"}]}]
+    md = report_mod.generate_report(
+        SETTINGS, "us", vision, "", INDICES, ver, HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert "**06:03** · 엔비디아" in md
+    assert "🔗 [엔비디아](https://news/nvda)" in md
+
+
+def test_verbatim_window_preserves_screen_layout(tmp_path, llm_down):
+    """07:45~08:10 주요지표 슬라이드는 압축하지 않고 원문 줄 구성을 보존."""
+    screen = ("다우 +0.27% / 나스닥 +1.30% / S&P500 +0.81%\n"
+              "WTI $71.8 / 달러인덱스 100.7 / 원화 1,507원\n"
+              "국채수익률 10년 4.54%, 2년 4.17%, 3개월 3.78%")
+    vision = [{"timestamp_sec": 15 * 60, "type": "자료화면", "text": screen}]   # 07:45+15m=08:00
+    md = report_mod.generate_report(
+        SETTINGS, "kr", vision, "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert "08:00 · 화면 원문" in md
+    assert screen in md            # 줄 구성 그대로
+
+
+def test_outside_verbatim_window_is_compressed(tmp_path, llm_down):
+    """구간 밖 화면은 한 줄로 압축된다."""
+    screen = "첫 줄 내용\n둘째 줄 내용"
+    vision = [{"timestamp_sec": 40 * 60, "type": "자료화면", "text": screen}]  # 07:45+40m=08:25
+    md = report_mod.generate_report(
+        SETTINGS, "kr", vision, "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert "화면 원문" not in md
+    assert "첫 줄 내용 둘째 줄 내용" in md    # 한 줄로 합쳐짐
 
 
 def test_sections_reject_non_sectioned_text():

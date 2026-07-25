@@ -213,6 +213,77 @@ def _parse_sections(text: str) -> dict:
     }
 
 
+def _clock(base_kst: str, ts_sec: int) -> str:
+    """녹화 시작 시각(KST) + 프레임 위치 → 방송 표시시각 'HH:MM' (짧게).
+
+    라이브 녹화는 start_kst에 시작하므로 프레임 0초 = start_kst가 되어 정확하다.
+    (VOD 트리밍 테스트에서는 트리밍 시작점만큼 오차가 생길 수 있다.)
+    """
+    try:
+        h, m = (int(x) for x in str(base_kst).split(":")[:2])
+    except (ValueError, AttributeError):
+        h = m = 0
+    total = h * 60 + m + int(ts_sec) // 60
+    return f"{(total // 60) % 24:02d}:{total % 60:02d}"
+
+
+def _in_window(clock: str, window: list | None) -> bool:
+    """'HH:MM'이 [시작,끝] 구간 안인지 (제로패딩이라 문자열 비교로 충분)."""
+    if not window or len(window) != 2:
+        return False
+    return str(window[0]) <= clock <= str(window[1])
+
+
+def _capture_blocks(
+    vision_results: list[dict],
+    verified_mentions: list[dict],
+    base_kst: str,
+    verbatim_window: list | None = None,
+) -> str:
+    """캡처 화면당 2줄 — ① 시각·종목·타이틀 ② 연관 기사 링크.
+
+    verbatim_window(예: 07:45~08:10 주요지표 요약 슬라이드) 안의 화면은 압축하지 않고
+    **원문 줄 구성을 그대로** 옮긴다. 그 화면은 배치 자체가 정보이기 때문이다.
+    """
+    from . import market
+
+    news_map = {
+        (v.get("name") or "").strip(): v.get("news") or []
+        for v in verified_mentions if v.get("name")
+    }
+    blocks: list[str] = []
+    for r in vision_results:
+        clock = _clock(base_kst, r.get("timestamp_sec", 0))
+        text = (r.get("text") or "").strip()
+        stocks = [s for s in (r.get("stocks") or []) if s.get("name")]
+        names = [str(s["name"]).strip() for s in stocks]
+
+        if _in_window(clock, verbatim_window) and text:
+            # 화면 그대로 — 줄 구성 보존
+            blocks.append(f"**{clock} · 화면 원문**\n```\n{text}\n```")
+        else:
+            title = " ".join(text.split())
+            if len(title) > 110:
+                title = title[:110] + "…"
+            head = f"**{clock}**"
+            if names:
+                head += f" · {', '.join(names[:6])}"
+            blocks.append(f"{head}\n{title or '(텍스트 없음)'}")
+
+        # 2번째 줄: 연관 기사 링크 (종목별 1건씩)
+        links: list[str] = []
+        for s in stocks[:4]:
+            nm = str(s["name"]).strip()
+            mkt = (s.get("market") or "").upper() or "KR"
+            items = news_map.get(nm) or market.search_links(nm, mkt)
+            if items:
+                n = items[0]
+                links.append(f"[{nm}]({n['url']})")
+        if links:
+            blocks.append(f"🔗 {' · '.join(links)}")
+    return "\n".join(blocks)
+
+
 def _quote_line(q: dict) -> str:
     """`• 나스닥: 20,123.45 📈 ▲1.23%` 형태.
 
@@ -294,11 +365,16 @@ def _fallback_report(
     쓸 만한 리포트가 된다. 반환 형태는 generate_report()와 동일해 호출 측
     (전송·아카이브)이 그대로 동작한다.
     """
-    label = settings["sessions"][session]["label"]
+    scfg = settings["sessions"][session]
+    label = scfg["label"]
     today = now_kst().strftime("%Y-%m-%d (%a)")
     material = _material_digest(vision_results)
     holdings_mentioned = _match_holdings_mentions(
         holdings_data, f"{transcript}\n{material}"
+    )
+    captures = _capture_blocks(
+        vision_results, verified_mentions,
+        scfg.get("start_kst", "00:00"), scfg.get("verbatim_window"),
     )
 
     banner = (
@@ -338,11 +414,11 @@ def _fallback_report(
     idx_title = f"💹 주요 지표 ({idx_asof})" if idx_asof else "💹 주요 지표"
     hold_title = f"💼 보유종목 시세 ({hold_asof})" if hold_asof else "💼 보유종목 시세"
     md_parts = [banner]
-    if material:
-        md_parts.append(f"\n### 📄 방송 화면 캡처 판독 (시간순)\n```\n{material}\n```")
+    if captures:
+        md_parts.append(f"\n### 🖼 방송 화면 캡처 (시각 · 종목 · 관련 기사)\n{captures}")
     else:
         md_parts.append(
-            "\n### 📄 방송 화면 캡처 판독\n"
+            "\n### 🖼 방송 화면 캡처\n"
             "비전 분석도 같은 사유로 실패해 자료화면 추출물이 없습니다."
         )
     md_parts += [
@@ -356,9 +432,10 @@ def _fallback_report(
     md_parts.append(f"\n{settings['report']['disclaimer']}")
     markdown_report = "\n".join(md_parts)
 
-    # ── 텔레그램용: 지표 → 종목 → 뉴스링크. 전사는 켜져 있을 때만 짧게 덧붙인다.
+    # ── 텔레그램용: 화면 캡처 → 지표 → 종목 → 뉴스링크
     telegram_text = "\n".join([
         banner,
+        f"\n🖼 방송 화면 캡처\n{captures}" if captures else "",
         f"\n{idx_title}\n{idx_block}",
         f"\n{hold_title}\n{hold_block}",
         f"\n💼 보유종목 언급 체크\n{mention_block}",
@@ -428,9 +505,13 @@ def generate_report(
 
     반환: {title_keyword, telegram_text, markdown_report, holdings_mentioned}
     """
-    label = settings["sessions"][session]["label"]
+    scfg = settings["sessions"][session]
+    label = scfg["label"]
     disclaimer = settings["report"]["disclaimer"]
     today = now_kst().strftime("%Y-%m-%d (%a)")
+    base_kst = scfg.get("start_kst", "00:00")
+    vwin = scfg.get("verbatim_window")
+    captures = _capture_blocks(vision_results, verified_mentions, base_kst, vwin)
 
     holdings_desc = json.dumps(
         [
@@ -484,6 +565,15 @@ def generate_report(
 {session_goal}
 
 공통 요구사항:
+- 🖼 **방송 화면 캡처 섹션을 리포트 맨 앞에** 두고, **캡처 1장당 정확히 2줄**로 쓰세요:
+    1줄: `**HH:MM** · 종목명들` 다음 줄에 그 화면의 핵심 내용 한 줄
+    2줄: `🔗 [종목명](기사url) · [종목명](기사url)`
+  시각은 `06:03`처럼 **짧게(HH:MM)** — 초 단위나 `[00:03:15]` 같은 표기는 쓰지 마세요.
+  아래 [방송 화면 캡처] 블록에 이미 이 형식으로 정리돼 있으니 **그 내용과 링크를
+  그대로 활용**하고, url을 새로 만들지 마세요.
+- **`화면 원문`으로 표시된 캡처(07:45~08:10 주요지표 요약 슬라이드)는 요약하지 말고
+  화면의 줄 구성을 그대로 옮기세요.** 그 화면은 배치 자체가 정보입니다 — 항목 순서,
+  구분자(/), 수치를 원문대로 유지하고 빠뜨리지 마세요.
 - 💹 주요 지수/자산 변동 섹션 포함 (아래 검증 시세 사용)
 - 💼 보유종목 언급 체크: 아래 보유/관심 종목이 방송에서 언급됐는지 확인. 언급됐으면 어떤 맥락인지, 안 됐으면 "언급 없음"으로.
 - 가격·등락률은 반드시 [검증 시세]를 우선하고, 화면 숫자는 검증 실패 시에만 "(방송 화면 기준)"을 붙여 사용
@@ -526,7 +616,10 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 [보유/관심 종목 검증 시세]
 {json.dumps(holdings_quotes, ensure_ascii=False)}
 
-[방송 화면 캡처 판독 결과 (광고 제외, 시간순)]
+[방송 화면 캡처 — 캡처당 '시각 · 종목' + 관련 기사 링크 (그대로 활용)]
+{captures}
+
+[화면 캡처 원문 판독 (광고 제외, 시간순)]
 {_material_digest(vision_results)}
 {f"{chr(10)}[음성 전사]{chr(10)}" + transcript[:40000] if transcript else ""}{us_ctx}"""
 

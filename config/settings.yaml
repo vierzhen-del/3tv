@@ -22,13 +22,17 @@ sessions:
     host_ad_min_sec: 1200
   kr:                       # 한국 시황 (당일 한국장 전망)
     label: "한국 시황"
-    # 방송2: 07:58~08:25, 흰색배경 자료화면까지 요약 정리 후 종료
-    poll_from_kst: "07:55"
-    start_kst: "07:55"
+    # 07:45부터 녹화 — 07:45~08:10에 매일 나오는 "전일, 해외 시장 흐름 및 특징"
+    # 요약 슬라이드를 반드시 담기 위해 시작을 앞당겼다 (기존 07:55)
+    poll_from_kst: "07:45"
+    start_kst: "07:45"
     end_kst: "08:25"
     frame_filter: white     # 흰색배경 자료화면 중심
     end_on_host_ad: false
     host_ad_min_sec: 1200
+    # 이 시간대 화면은 압축하지 않고 **화면 구성 그대로** 리포트에 옮긴다.
+    # (매일 방송되는 주요지표 요약 슬라이드 — 원문 배치가 곧 정보다)
+    verbatim_window: ["07:45", "08:10"]
 
 capture:
   resolution: 480           # OCR에 충분 + 용량 절약
