@@ -1,78 +1,47 @@
-# 3tv — Claude Code 작업 규칙 (운영지식 축적, 2026-07-19 제정)
+# 3tv — 저장소 함정 메모
 
 삼프로TV 아침 라이브를 자동 녹화·분석해 시황 리포트를 만드는 파이프라인.
-아키텍처·셋업은 README.md, 여기는 **세션 간 인수인계용 운영지식**만 담는다.
+아키텍처·셋업은 README.md.
 
-## 브랜치 구조 (혼동 주의)
+## 모델별 동작 (2026-07-25, Anthropic Claude 5 컨텍스트 엔지니어링 가이드 반영)
 
-- **기본 브랜치 = `claude/youtube-market-analysis-vucjwq`** (main 아님). cron 스케줄은
-  이 브랜치에서 돈다. 코드 수정이 실제 운영에 반영되려면 반드시 이 브랜치에 병합돼야 한다.
-- main 병합은 불필요함이 확인됨(2026-07-18) — 기본 브랜치가 위 브랜치로 지정돼 있음.
+이 문서는 **열어보기 전엔 모를 함정**만 담는다. 절차 상세는 `.claude/skills/`에 있고 필요할 때만 연다.
 
-## Secrets·자격증명 상태 (2026-07-19 실측)
+- **Opus 5 / Fable 5** (`claude-opus-5`, `claude-fable-5`): 아래를 금지령이 아니라 배경지식으로 읽고,
+  주변 코드·맥락에 맞춰 스스로 판단한다. 스킬 문서는 그 작업을 실제로 할 때만 연다.
+- **Sonnet 5 이하 · Haiku · 타사 모델(Gemini 등)**: 해당 스킬 문서를 **먼저 열어** 절차대로 수행하고,
+  판단으로 단계를 건너뛰지 않는다.
+- **모델과 무관하게 항상 유효**: 개인정보·보유자산 데이터 커밋 금지, 매매 자문 금지, 시크릿 노출 금지.
+- 모델 세대가 올라가면 옛 약점을 막으려 세워둔 규칙부터 걷어낸다 (`/doctor`로 점검).
 
-- **GEMINI_API_KEY / ANTHROPIC_API_KEY / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: 등록 완료.**
-  (노션 7/18 미결점검의 "Secrets 전부 미등록"은 구정보 — 7/19 실행 로그로 등록 확인됨.)
-- **ANTHROPIC_API_KEY는 크레딧 0, 2026-07-19 사용자 확정: 충전 없이 Gemini 전용 운영.**
-  `config/settings.yaml`의 `models.claude_disabled: true`가 Claude 호출 자체를 생략하고
-  바로 Gemini(`models.gemini` → 실패 시 `models.gemini_fallback`)로 리포트를 생성한다
-  (`report.py`의 `_call_llm`). 매 실행마다 실패하는 Anthropic API 호출/로그를 없애기 위해
-  단순 try/폴백이 아니라 명시적 플래그로 전환(7/19). 크레딧을 충전하면 이 플래그를
-  false로 바꾸는 것만으로 코드 변경 없이 Claude가 다시 primary가 된다.
-  14fiance의 `CAPTURE_CLAUDE_API_DISABLED`와 동일 계열의 조치다.
-- **KRX_ID/KRX_PW 등록 완료(2026-07-19)** — data.krx.co.kr 회원 로그인 아이디·비밀번호를
-  GitHub Secrets로 등록. pykrx의 `KRXSession`이 1시간 세션 쿠키로 인증 요청을 보내
-  국내 시세 조회 신뢰도가 올라간다(미등록 시에도 익명 요청으로 폴백해 동작은 하지만
-  GitHub Actions 공유 IP는 차단·제한 가능성이 더 높음). 실제 로그인 성공 여부는 다음
-  실전 런(월요일 새벽) 또는 VOD 테스트 로그에서 `KRX 로그인 완료.` 문자열로 확인—
-  API로 Secrets 값 자체는 조회 불가하므로 실행 로그가 유일한 검증 수단.
-- **YOUTUBE_COOKIES: 사용자 등록 완료.**
-- **KAKAO_REST_API_KEY/KAKAO_REFRESH_TOKEN 등록 완료(2026-07-19)** — `scripts/kakao_get_token.py`
-  로컬 발급(Client Secret 미사용 설정) 후 Secrets 등록. `settings.yaml`의 `kakao.enabled: true`가
-  이미 켜져 있어 코드 변경 없이 다음 실행부터 카카오 "나에게 보내기"로도 리포트 발송.
-  refresh token 유효기간 약 2개월 — 만료 임박 시 파이프라인이 자동 갱신 시도(GH_PAT 필요),
-  실패하면 텔레그램으로 재발급 안내가 온다.
-- **n8n용 PAT 발급 및 워크플로 활성화 완료(2026-07-20)** — 아래 "볼트 연동" 절 참조.
+원본 규칙: second-brain 볼트 `14rae_work/00_지침/2026-07-25_모델별-운영규칙.md`
 
-## GitHub cron 지연 (실측 40~55분)
+## 스킬 (필요할 때만 열기)
 
-- 스케줄이 예정보다 40~55분 늦게 시작되는 것이 2026-07 운영 로그로 실측됨.
-  7/12~7/16 스케줄 런 10회 전부가 이 지연(+당시 크레딧 문제)으로 실패했다.
-- 대응: cron을 방송 55분 전(us 20:00 UTC=05:00 KST / kr 22:00 UTC=07:00 KST)으로
-  이동(2026-07-18). capture.py가 방송 시작(05:55/07:55)까지 대기하므로 코드 변경 불필요.
-  지연이 55분을 넘는 날은 여전히 실패 → 텔레그램 경고 후 VOD 재실행으로 복구.
+| 스킬 | 언제 |
+|---|---|
+| `운영점검` | 스케줄 실패 · cron 지연 · Secrets 상태 · Gemini 할당량 · VOD 재실행 |
+| `볼트연동` | 리포트가 옵시디안에 안 보임 · 동기화 경로 확인 |
+| `github-3tv` | 브랜치 구조 · 커밋/푸시 · Actions 수동 실행 |
 
-## Gemini 무료 티어 예산 (flash: 20요청/일)
+## 함정
 
-- 비전 분석: 세션당 최대 4요청(64프레임÷16장/배치), us+kr 하루 8요청.
-- report.py Gemini 폴백 가동 시: 세션당 +2요청(종목 추출 1 + 리포트 1), 하루 +4요청.
-- 합계 최대 12요청/일 — 한도 내. 같은 날 수동 테스트를 반복하면 한도에 걸릴 수 있고,
-  429 시 flash-lite(별도 할당량 버킷)로 자동 전환된다. 상세는 vision.py 모듈 docstring.
+**기본 브랜치가 main이 아니다** — `claude/youtube-market-analysis-vucjwq` 에서 cron이 돈다.
+코드 수정이 운영에 반영되려면 이 브랜치에 병합돼야 한다.
 
-## 볼트 연동 (Syncthing 구조 — git 볼트 아님)
+**Claude API는 호출하지 않는다** — `ANTHROPIC_API_KEY` 는 등록돼 있으나 크레딧 0이고, 2026-07-19
+사용자 확정으로 Gemini 전용 운영이다. `config/settings.yaml` 의 `models.claude_disabled: true` 가
+Claude 호출 자체를 생략하고 바로 Gemini(`models.gemini` → 실패 시 `models.gemini_fallback`)로 리포트를
+생성한다(`report.py` 의 `_call_llm`). 매 실행마다 실패하는 API 호출/로그를 없애려고 단순 try/폴백이
+아니라 명시적 플래그로 전환했다. 크레딧을 충전하면 이 플래그만 false로 바꾸면 Claude가 다시 primary가
+된다(14fiance의 `CAPTURE_CLAUDE_API_DISABLED` 와 같은 계열).
 
-- 리포트는 `3tv-reports`(private 중계 repo)에 push → S9의 n8n 스케줄(07:10/08:50 KST)이
-  fetch → 볼트(RaeVault)의 `3protv/YYYY/MM/*.md` → Syncthing이 S26에 전파.
-- **push 경로는 검증 완료**(2026-07-19 05:51 KST "3protv us 리포트" 커밋 실측).
-- ⚠️ **실제 볼트 폴더명은 "RaeVault"가 아니라 `vierzhen_home`(2026-07-20 실측 정정)**:
-  전체 경로는 `/storage/emulated/0/Documents/vierzhen_home/3protv/` (proot 안에서는
-  `--bind /storage/emulated/0/Documents/vierzhen_home:/root/obsidian` 후 `/root/obsidian/3protv/`).
-  "RaeVault"는 노션 문서의 별칭일 뿐 실제 폴더명이 아니었음 — 예전 문서에 남은
-  `RaeVault/...` 표기는 전부 이 경로로 치환해서 읽을 것.
-- **n8n 수신 워크플로 생성·PAT 입력·활성화 완료(2026-07-20)** — Tab S9에서 Claude Code CLI +
-  n8n-mcp로 워크플로 생성, GitHub PAT는 n8n 웹UI에서 사용자가 직접 입력(보안상 자동화 제외),
-  Active 전환 완료. 이 과정에서 n8n 서버 자체가 (Node 버전 비호환 + DB 테이블 소유권 불일치 +
-  스키마 권한 미부여) 3중 장애로 죽어 있던 것도 함께 복구됨 — 상세:
-  [노션 — n8n 재시작 실패 3종 해결](https://app.notion.com/p/3a35efd0e46281ab8353c57aa586bf6f),
-  docs/n8n_s9_sync.md 참고.
-- second-brain git repo + Obsidian Git 방식은 이중 동기화 충돌 위험으로 폐기됨(2026-07-18).
-  n8n 통합 실패 시에만 폴백으로 사용.
+**실제 볼트 폴더명은 `vierzhen_home`** — "RaeVault"는 노션 문서의 별칭일 뿐이다. 예전 문서의
+`RaeVault/...` 표기는 `/storage/emulated/0/Documents/vierzhen_home/3protv/` 로 치환해 읽는다.
+상세는 `볼트연동` 스킬.
 
-## 작업 시 주의
+**프롬프트는 짝으로 수정한다** — `src/threetv/vision.py` 의 `PROMPT` 와 `report.py` 의 세션 목표가
+짝으로 동작한다. 종목 목록·프롬프트를 고칠 때 한쪽만 고치지 말 것.
 
-- 스케줄 실패 문의가 오면: ① actions_list로 실제 실행·지연 여부 확인 → ② 실패 로그에서
-  원인 구분(캡처 실패=지연/차단, 400=크레딧, 429=Gemini 할당량) → ③ 필요 시 VOD로 재실행.
-- 같은 날 워크플로를 반복 수동 실행하면 Gemini 할당량을 소모한다 — 테스트는
-  `--trim-start/--trim-duration`(구간 트리밍)이나 `--skip-notify --skip-archive`로.
-- 종목 목록·프롬프트 수정 시 vision.py의 PROMPT와 report.py의 세션 목표가 짝으로
-  동작하므로 한쪽만 고치지 말 것.
+**같은 날 반복 실행은 Gemini 무료 할당량을 소모한다** — 테스트는 `--trim-start`/`--trim-duration`
+(구간 트리밍) 또는 `--skip-notify --skip-archive` 로. 예산 계산은 `운영점검` 스킬.
