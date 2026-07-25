@@ -162,6 +162,57 @@ def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> st
     return digest[:limit_chars]
 
 
+def _parse_sections(text: str) -> dict:
+    """구분선 기반 리포트 응답 파싱 (JSON 대신 쓰는 이유는 아래).
+
+    LLM에게 긴 마크다운을 JSON 문자열로 감싸 달라고 하면 구조가 계속 깨진다 —
+    2026-07-25 실측으로 3연속 실패했다:
+      ① 문자열 안 실제 개행 → 'Invalid control character'
+      ② 토큰 상한에 걸려 잘림 → 닫는 '}' 없음
+      ③ 방송 인용문의 따옴표 미이스케이프 → "Expecting ',' delimiter"
+    구분선 방식은 이스케이프가 아예 필요 없어 이 실패 유형이 원천적으로 사라진다.
+    """
+    marks = ["===TITLE===", "===TELEGRAM===", "===MARKDOWN===", "===HOLDINGS===", "===END==="]
+    if "===TITLE===" not in text or "===MARKDOWN===" not in text:
+        raise ValueError(f"구분선 형식이 아닙니다: {text[:200]}")
+
+    pos = {m: text.find(m) for m in marks}
+
+    def section(start_mark: str) -> str:
+        i = pos[start_mark]
+        if i < 0:
+            return ""
+        i += len(start_mark)
+        # 다음으로 등장하는 구분선까지
+        ends = [p for m, p in pos.items() if p > i]
+        return text[i : min(ends)].strip() if ends else text[i:].strip()
+
+    holdings: list[dict] = []
+    for line in section("===HOLDINGS===").splitlines():
+        line = line.strip().lstrip("-•* ").strip()
+        if not line or line.startswith("(") or "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        name = parts[0]
+        if not name:
+            continue
+        flag = parts[1].upper() if len(parts) > 1 else ""
+        ctx = parts[2] if len(parts) > 2 else ""
+        holdings.append({
+            "name": name,
+            "mentioned": flag.startswith("O") or flag == "TRUE",
+            "context": ctx or None,
+        })
+
+    return {
+        "title_keyword": section("===TITLE===").splitlines()[0].strip()
+        if section("===TITLE===") else "",
+        "telegram_text": section("===TELEGRAM==="),
+        "markdown_report": section("===MARKDOWN==="),
+        "holdings_mentioned": holdings,
+    }
+
+
 def _quote_line(q: dict) -> str:
     """`• 나스닥: 20,123.45 📈 ▲1.23% [2026-07-24 종가]` 형태 (등락 아이콘 포함)."""
     asof = f" [{q['asof']} 종가]" if q.get("asof") else ""
@@ -427,13 +478,20 @@ def generate_report(
 - 예측은 근거(방송 발언/자료)와 함께, 과신 없이
 - 마지막에 디스클레이머: {disclaimer}
 
-JSON 객체로만 답하세요:
-{{
-  "title_keyword": "<오늘 방송 핵심 키워드 한 단어~구, 파일명용 (예: 반도체급등)>",
-  "telegram_text": "<텔레그램용 요약. 이모지 섹션 구분, 3500자 이내, 마크다운 헤더(#) 금지, 굵게는 *텍스트* 형식>",
-  "markdown_report": "<옵시디안용 상세 마크다운 리포트. ## 섹션 헤더, 표 사용 가능>",
-  "holdings_mentioned": [{{"name": "<보유종목명>", "mentioned": true|false, "context": "<언급 맥락 또는 null>"}}]
-}}
+출력 형식 — 아래 구분선을 **그대로** 쓰고 각 구분선 뒤에 내용을 쓰세요.
+JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 자유롭게 쓰세요.
+
+===TITLE===
+오늘 방송 핵심 키워드 한 단어~구 (파일명용, 예: 반도체급등)
+===TELEGRAM===
+텔레그램용 요약. 이모지로 섹션 구분, 3500자 이내, 마크다운 헤더(#) 금지, 굵게는 *텍스트*
+===MARKDOWN===
+옵시디안용 상세 리포트. ## 섹션 헤더와 표 사용 가능
+===HOLDINGS===
+보유종목마다 한 줄씩: 종목명 | O 또는 X | 언급 맥락
+(예: 삼성전자 | O | 미 상무장관이 미국 생산 확대 촉구
+     테슬라 | X | )
+===END===
 
 [주요 지수/자산 검증 시세]
 {json.dumps(indices, ensure_ascii=False)}
@@ -458,7 +516,7 @@ JSON 객체로만 답하세요:
     try:
         # 33개 지표 + M7 표 + 6개 섹션을 요구하므로 출력 분량이 크다.
         # 12000으로는 사고 토큰까지 겹쳐 응답이 잘렸다(7/25 실측) → 넉넉하게 확보.
-        data = _parse_json_obj(_call_llm(settings["models"], prompt, max_tokens=40000))
+        data = _parse_sections(_call_llm(settings["models"], prompt, max_tokens=40000))
         for key in ("title_keyword", "telegram_text", "markdown_report"):
             if not data.get(key):
                 raise RuntimeError(f"리포트 생성 결과에 {key} 누락")

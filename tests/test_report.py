@@ -144,49 +144,82 @@ def test_fallback_includes_material_digest_when_available(tmp_path, llm_down):
     assert "[01:05]" in md and "엔비디아 신고가" in md
 
 
+SECTIONED = """===TITLE===
+반도체급등
+===TELEGRAM===
+요약 텍스트
+===MARKDOWN===
+## 상세 리포트
+===HOLDINGS===
+삼성전자 | O | 실적 언급
+테슬라 | X |
+===END==="""
+
+
 def test_successful_llm_path_unchanged(tmp_path, monkeypatch):
     """회귀 방지 — LLM이 정상이면 그 결과를 그대로 쓴다."""
-    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: json.dumps({
-        "title_keyword": "반도체급등",
-        "telegram_text": "요약 텍스트",
-        "markdown_report": "## 상세 리포트",
-        "holdings_mentioned": [{"name": "삼성전자", "mentioned": True, "context": "실적"}],
-    }, ensure_ascii=False))
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: SECTIONED)
     data = _generate(tmp_path, transcript="무엇이든")
     assert data["title_keyword"] == "반도체급등"
     assert data["markdown_report"] == "## 상세 리포트"
     assert "AI 요약 없음" not in data["markdown_report"]
+    by = {h["name"]: h for h in data["holdings_mentioned"]}
+    assert by["삼성전자"]["mentioned"] is True and by["테슬라"]["mentioned"] is False
+    assert by["삼성전자"]["context"] == "실적 언급"
 
 
-def test_parses_json_with_literal_newlines_in_strings():
-    """2026-07-25 실장애 재현: LLM이 마크다운 본문에 실제 개행을 넣어 보낸 응답.
+def test_sections_survive_quotes_and_newlines():
+    """2026-07-25 3연속 실장애의 원인들을 한 번에 재현.
 
-    strict=True면 'Invalid control character'로 죽어 리포트 전체가 버려졌다.
+    JSON이었다면 ① 실제 개행 ② 미이스케이프 따옴표 로 모두 깨졌을 입력이다.
     """
-    raw = (
-        '{"title_keyword": "반도체강세",\n'
-        ' "telegram_text": "첫 줄\n둘째 줄\n셋째 줄",\n'
-        ' "markdown_report": "## 제목\n\n- 항목1\n- 항목2\n\n표\t들여쓰기",\n'
-        ' "holdings_mentioned": []}'
-    )
-    data = report_mod._parse_json_obj(raw)
-    assert data["title_keyword"] == "반도체강세"
-    assert "둘째 줄" in data["telegram_text"]
-    assert "항목1" in data["markdown_report"]
+    raw = '''===TITLE===
+AI반도체수급
+===TELEGRAM===
+🇺🇸 미국 시황
+메타, "유휴 컴퓨팅 없다" "임대 제의 검토일 뿐"
+- 나스닥 📈 ▲1.30%
+===MARKDOWN===
+## 미국 시황
+
+다우 📈 ▲0.27% / 나스닥 📈 ▲1.30%
+마이크론, $2,000억 → $2,500억 "투자 확대" (UBS)
+
+| 종목 | 종가 |
+|---|---|
+| NVDA | 202.0 |
+===HOLDINGS===
+삼성전자 | O | "미국 생산 확대" 촉구
+===END==='''
+    data = report_mod._parse_sections(raw)
+    assert data["title_keyword"] == "AI반도체수급"
+    assert '"유휴 컴퓨팅 없다"' in data["telegram_text"]
+    assert "| NVDA | 202.0 |" in data["markdown_report"]
+    assert data["holdings_mentioned"][0]["mentioned"] is True
+    assert '"미국 생산 확대"' in data["holdings_mentioned"][0]["context"]
 
 
-def test_multiline_llm_response_uses_llm_not_fallback(tmp_path, monkeypatch):
-    """개행 포함 응답이 열화 경로로 새지 않고 정상 LLM 리포트로 채택돼야 한다."""
-    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (
-        '{"title_keyword": "AI반도체",\n'
-        ' "telegram_text": "🇺🇸 미국 시황\n- 나스닥 상승\n- SOX 강세",\n'
-        ' "markdown_report": "## 미국 시황\n\n다우 ▲0.27%\n나스닥 ▲1.30%",\n'
-        ' "holdings_mentioned": [{"name": "삼성전자", "mentioned": true, "context": "언급"}]}'
-    ))
+def test_sections_reject_non_sectioned_text():
+    with pytest.raises(ValueError):
+        report_mod._parse_sections("그냥 평범한 텍스트 응답")
+
+
+def test_sectioned_response_uses_llm_not_fallback(tmp_path, monkeypatch):
+    """따옴표·개행이 섞인 응답이 열화 경로로 새지 않아야 한다."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: '''===TITLE===
+AI반도체
+===TELEGRAM===
+메타, "유휴 컴퓨팅 없다"
+===MARKDOWN===
+## 미국 시황
+
+나스닥 📈 ▲1.30%
+===HOLDINGS===
+===END===''')
     data = _generate(tmp_path, transcript="방송 전사")
     assert data["title_keyword"] == "AI반도체"
-    assert "AI 요약 없음" not in data["markdown_report"]   # 열화 경로 아님
-    assert "나스닥 ▲1.30%" in data["markdown_report"]
+    assert "AI 요약 없음" not in data["markdown_report"]
+    assert "나스닥 📈 ▲1.30%" in data["markdown_report"]
 
 
 def test_truncated_response_reports_token_limit_cause(tmp_path, monkeypatch):
@@ -220,11 +253,14 @@ def test_vision_parses_json_with_literal_newlines():
     assert "나스닥" in got[0]["text"]
 
 
-def test_missing_required_key_falls_back(tmp_path, monkeypatch):
-    """LLM이 응답했으나 필수 키가 비면 열화 경로로 — 빈 리포트 발행 방지."""
-    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: json.dumps(
-        {"title_keyword": "키워드", "telegram_text": "", "markdown_report": "본문"}
-    ))
+def test_missing_required_section_falls_back(tmp_path, monkeypatch):
+    """필수 섹션이 비면 열화 경로로 — 빈 리포트 발행 방지."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
+키워드
+===TELEGRAM===
+===MARKDOWN===
+본문
+===END===""")
     data = _generate(tmp_path, transcript="전사 내용")
     assert data["title_keyword"] == "원자료시황"
     assert "AI 요약 없음" in data["markdown_report"]
