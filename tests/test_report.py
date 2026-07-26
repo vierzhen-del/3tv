@@ -396,3 +396,65 @@ def test_verbatim_keeps_short_screen_intact(tmp_path, llm_down):
     )["markdown_report"]
     assert screen in md
     assert "줄 표시" not in md          # 생략 표기 없음
+
+
+QUOTE_TABLE = (
+    "종목명, 현재가, 전일대비, 등락률, 거래량\n"
+    "삼성전자, 289000, ▲ 11000, 3.96, 2406255\n"
+    "SK하이닉스, 2300000, ▲ 114000, 5.22, 669501\n"
+    "삼성SDI, 1427000, ▲ 100000, 7.54, 91960\n"
+    "현대차, 449500, ▲ 4000, 0.90, 77676\n"
+    "기아, 147000, ▲ 2200, 1.52, 24922\n"
+)
+
+
+def test_detects_quote_table():
+    assert report_mod._is_quote_table(QUOTE_TABLE, []) is True
+    # 종목이 과도하게 많으면 헤더를 못 읽어도 시세판으로 본다
+    many = [{"name": f"종목{i}"} for i in range(12)]
+    assert report_mod._is_quote_table("무슨 화면", many) is True
+
+
+def test_summary_slide_is_not_quote_table():
+    slide = ("다우 +0.27% / 나스닥 +1.30% / S&P500 +0.81%\n"
+             "WTI $71.8 / 달러인덱스 100.7 / 원화 1,507원")
+    assert report_mod._is_quote_table(slide, [{"name": "엔비디아"}]) is False
+
+
+def test_quote_table_excluded_from_8am_window(tmp_path, llm_down):
+    """08시 전후는 흰 배경 슬라이드만 — 개별 종목 시세판은 제외한다."""
+    vision = [
+        {"timestamp_sec": 14 * 60, "type": "자료화면", "text": QUOTE_TABLE},   # 07:59 시세판
+        {"timestamp_sec": 15 * 60, "type": "자료화면",
+         "text": "다우 +0.27% / 나스닥 +1.30%"},                                # 08:00 슬라이드
+    ]
+    md = report_mod.generate_report(
+        SETTINGS, "kr", vision, "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert "다우 +0.27%" in md          # 슬라이드는 남고
+    assert "2406255" not in md          # 시세판 숫자는 사라진다
+    assert "SK하이닉스, 2300000" not in md
+
+
+def test_us_stocks_in_captures_excludes_kr_and_tables():
+    vision = [
+        {"text": QUOTE_TABLE, "stocks": [{"name": "삼성전자", "market": "KR"}]},
+        {"text": "엔비디아 신고가", "stocks": [
+            {"name": "엔비디아", "market": "US"},
+            {"name": "삼성전자", "market": "KR"},      # 국내는 제외
+            {"name": "마이크론", "market": "US"},
+        ]},
+        {"text": "메타 관련", "stocks": [{"name": "엔비디아", "market": "US"}]},  # 중복
+    ]
+    got = report_mod.us_stocks_in_captures(vision)
+    assert got == ["엔비디아", "마이크론"]
+
+
+def test_us_stocks_in_captures_respects_limit():
+    """한 화면에 종목이 몰리면 시세판으로 걸러지므로, 여러 화면에 나눠 담는다."""
+    vision = [
+        {"text": f"화면 {n}", "stocks": [
+            {"name": f"US{n}_{i}", "market": "US"} for i in range(3)]}
+        for n in range(5)
+    ]
+    assert len(report_mod.us_stocks_in_captures(vision, limit=5)) == 5

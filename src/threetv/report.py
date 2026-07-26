@@ -249,6 +249,26 @@ def _briefing_lines(news_briefing: list[dict] | None) -> str:
 
 VERBATIM_MAX_LINES = 15   # '화면 원문' 보존 시 한 화면당 최대 줄 수
 
+# 개별 종목 시세판을 가려내는 단서 — 이런 화면은 8시 전후 분석에서 제외한다
+# (사용자 확정 2026-07-26: 08시 전후는 흰 배경 '그림' 슬라이드만 보고 개별 주가는 미적용)
+_QUOTE_TABLE_HINTS = ("현재가", "거래량", "전일대비", "등락률", "체결")
+
+
+def _is_quote_table(text: str, stocks: list | None) -> bool:
+    """개별 종목 시세판(종목명·현재가·거래량 나열) 화면인지.
+
+    2026-07-26 실측: 07:59 코스피/코스닥 시세판이 50줄 넘게 잡혀 리포트를 잠식했다.
+    이런 화면은 '요약 슬라이드'가 아니라 단순 종목 나열이라 분석 가치가 낮다.
+    """
+    t = text or ""
+    hits = sum(1 for h in _QUOTE_TABLE_HINTS if h in t)
+    rows = [ln for ln in t.splitlines() if ln.count(",") >= 3]
+    # 시세표 헤더 단어가 2개 이상 + 쉼표 구분 행이 여러 줄이면 시세판
+    if hits >= 2 and len(rows) >= 5:
+        return True
+    # 헤더를 못 읽었더라도 한 화면에 종목이 과도하게 많으면 시세판으로 본다
+    return len(stocks or []) >= 12
+
 
 def _flow_lines(flows: dict | None) -> str:
     """수급 데이터를 사람이 읽는 줄로 (LLM 요약 실패 시에도 원자료가 남게)."""
@@ -284,8 +304,10 @@ def _capture_blocks(
 ) -> str:
     """캡처 화면당 2줄 — ① 시각·종목·타이틀 ② 연관 기사 링크.
 
-    verbatim_window(예: 07:45~08:10 주요지표 요약 슬라이드) 안의 화면은 압축하지 않고
+    verbatim_window(예: 07:45~08:10 요약 슬라이드) 안의 화면은 압축하지 않고
     **원문 줄 구성을 그대로** 옮긴다. 그 화면은 배치 자체가 정보이기 때문이다.
+    단 그 구간의 **개별 종목 시세판은 제외**한다 (사용자 확정: 08시 전후는 흰 배경
+    그림 슬라이드만 보고 개별 주가는 반영하지 않는다).
     """
     from . import market
 
@@ -294,11 +316,17 @@ def _capture_blocks(
         for v in verified_mentions if v.get("name")
     }
     blocks: list[str] = []
+    skipped_tables = 0
     for r in vision_results:
         clock = _clock(base_kst, r.get("timestamp_sec", 0))
         text = (r.get("text") or "").strip()
         stocks = [s for s in (r.get("stocks") or []) if s.get("name")]
         names = [str(s["name"]).strip() for s in stocks]
+
+        # 8시 전후 구간의 개별 종목 시세판은 분석 대상이 아니다
+        if _in_window(clock, verbatim_window) and _is_quote_table(text, stocks):
+            skipped_tables += 1
+            continue
 
         if _in_window(clock, verbatim_window) and text:
             # 화면 그대로 — 줄 구성 보존. 단 시세 표처럼 줄이 매우 많은 화면은
@@ -329,7 +357,33 @@ def _capture_blocks(
                 links.append(f"[{nm}]({n['url']})")
         if links:
             blocks.append(f"🔗 {' · '.join(links)}")
+    if skipped_tables:
+        log.info("8시 전후 개별 종목 시세판 %d장 제외 (흰 배경 슬라이드만 분석)",
+                 skipped_tables)
     return "\n".join(blocks)
+
+
+def us_stocks_in_captures(vision_results: list[dict], limit: int = 12) -> list[str]:
+    """캡처 화면에 등장한 **미국 종목명** (등장 순서, 중복 제거).
+
+    언급종목 기사검색의 대상을 이 목록으로 잡는다 — 전사·LLM 추출 목록보다
+    '방송 화면에 실제로 떴던 미장 종목'이 사용자가 원하는 기준이다.
+    한글/영문 모두 그대로 두고(뉴스 검색은 한국어 매체가 대상), KR 종목은 제외한다.
+    """
+    out: list[str] = []
+    for r in vision_results:
+        stocks = r.get("stocks") or []
+        if _is_quote_table(r.get("text") or "", stocks):
+            continue                      # 시세판은 대상 아님
+        for s in stocks:
+            nm = str(s.get("name") or "").strip()
+            mkt = (s.get("market") or "").upper()
+            if not nm or mkt == "KR" or nm in out:
+                continue
+            out.append(nm)
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def _quote_line(q: dict) -> str:
@@ -575,6 +629,8 @@ def generate_report(
     base_kst = scfg.get("start_kst", "00:00")
     vwin = scfg.get("verbatim_window")
     captures = _capture_blocks(vision_results, verified_mentions, base_kst, vwin)
+    # 6번(언급종목 연관기사)의 대상 — 캡처 화면에 실제로 뜬 미장 종목
+    capture_us = us_stocks_in_captures(vision_results)
 
     holdings_desc = json.dumps(
         [
@@ -584,9 +640,9 @@ def generate_report(
         ensure_ascii=False,
     )
 
-    # 사용자 확정 리포트 순서 (2026-07-25) — us/kr 공통 골격, 세션별 강조점만 다르다.
-    # 1 요약(미장·국장 전망) → 2 주요지표 → 3 언급종목 연관기사 → 4 8시 전후 캡처
-    # → 5 관심종목 업데이트 → 6 기사 상세분석 + 수급/변동성
+    # 사용자 확정 리포트 순서 (2026-07-26 갱신) — us/kr 공통 골격.
+    # 1 요약(미장·국장 전망) → 2 주요지표 → 3 8시 전후 캡처 → 4 관심종목 업데이트
+    # → 5 수급/변동성 → 6 언급종목 연관기사(맨 뒤로 이동, 대상=캡처 화면의 미장 종목)
     common_order = """아래 **1~6 순서와 번호를 그대로** 지켜 작성하세요. 항목을 빼거나 순서를 바꾸지 마세요.
 
 1) 📌 **3protv 요약** — 방송 핵심을 압축하고, 이어서 **미국장 정리**와 **오늘 국내장 전망**을
@@ -606,32 +662,36 @@ def generate_report(
    - M7 + AI·반도체: 애플·MS·알파벳·아마존·엔비디아·메타·테슬라 / 인텔·AMD·브로드컴·오라클
    - 변동성: VIX
 
-3) 📈 **언급종목 연관기사 검색 요약** — 방송에서 언급된 종목마다:
-   - **항목당 정확히 2줄**: 1줄은 `• 종목명: 종가 아이콘 등락률 — 핵심 한 줄`,
-     2줄은 `🔗 [기사제목](url) · [기사제목](url)`
-   - 링크는 [언급 종목 검증 시세]의 `news` 배열과 [뉴스 브리핑 기사]에 주어진 url만 사용.
-     **url을 절대 새로 만들지 마세요.**
-
-4) 🖼 **8시 전후 캡처화면 정리** — [방송 화면 캡처] 블록을 그대로 활용해 캡처당 2줄
+3) 🖼 **8시 전후 캡처화면 정리** — [방송 화면 캡처] 블록을 그대로 활용해 캡처당 2줄
    (`**HH:MM** · 종목` / `🔗 링크`). 시각은 `08:00`처럼 짧게.
-   - `화면 원문`으로 표시된 캡처(07:45~08:10 주요지표 요약 슬라이드)는 **요약하지 말고
+   - `화면 원문`으로 표시된 캡처(07:45~08:10 흰 배경 요약 슬라이드)는 **요약하지 말고
      화면의 줄 구성을 그대로** 옮기세요. 항목 순서·구분자(/)·수치를 원문대로 유지.
+   - ⚠️ 이 구간은 **흰 배경 그림·슬라이드만** 대상입니다. 개별 종목 시세판
+     (종목명·현재가·거래량 나열)은 이미 제외돼 있으니 **개별 주가를 끌어와 쓰지 마세요.**
 
-5) 💼 **관심종목 업데이트** — 보유/관심 종목의 전일 종가·등락률 + 방송 언급 여부.
+4) 💼 **관심종목 업데이트** — 보유/관심 종목의 전일 종가·등락률 + 방송 언급 여부.
    언급됐으면 어떤 맥락인지, 안 됐으면 "언급 없음". 보유종목에 직접 영향이 있는 이슈를 짚어주세요.
 
-6) 🔎 **기사 상세분석 · 수급/변동성** — 3번 기사들을 한 단계 더 파고든 요약 리포트:
-   - 겹치는 기사는 묶어 사안별 3줄 이내 요약 + 대표 링크 1~2개
+5) 🔎 **수급 · 변동성**:
    - **전일 수급주체 수급동향**: [수급 데이터]의 investors(기관·외국인·개인 순매수, 억원)
    - **순매수 top10 / 순매도 top10**: [수급 데이터]의 top
    - **ETF 등락 상위/하위**: [수급 데이터]의 etf
    - **VIX (미장·국장)**: 미장은 검증 시세의 VIX, 국장은 VKOSPI(코스피 변동성지수)가
      검증 시세에 있으면 사용하고 없으면 "확인 불가"로 적으세요
-   - 수급 데이터가 비어 있으면 그 항목만 "조회 실패"로 적고 넘어가세요 (숫자 창작 금지)"""
+   - 수급 데이터가 비어 있으면 그 항목만 "조회 실패"로 적고 넘어가세요 (숫자 창작 금지)
+
+6) 📈 **언급종목 연관기사 검색 요약** (⚠️ **반드시 리포트 맨 뒤**) —
+   대상은 **방송 캡처 화면에 등장한 미국 종목**입니다([캡처 화면의 미장 종목] 목록 참고).
+   전사나 추측으로 종목을 늘리지 말고 그 목록을 기준으로 쓰세요.
+   - **항목당 정확히 2줄**: 1줄은 `• 종목명: 종가 아이콘 등락률 — 핵심 한 줄`,
+     2줄은 `🔗 [기사제목](url) · [기사제목](url)`
+   - 링크는 [언급 종목 검증 시세]의 `news` 배열과 [뉴스 브리핑 기사]에 주어진 url만 사용.
+     **url을 절대 새로 만들지 마세요.**
+   - 겹치는 기사는 묶어 사안별 3줄 이내로 요약하세요."""
 
     session_focus = {
         "us": "이 방송은 전일 미국장 마감 리뷰입니다. 1번의 미국장 정리를 특히 두껍게 쓰세요.",
-        "kr": "이 방송은 당일 한국장 개장 전 전망입니다. 1번의 국내장 전망과 4번(8시 전후 화면)을 "
+        "kr": "이 방송은 당일 한국장 개장 전 전망입니다. 1번의 국내장 전망과 3번(8시 전후 화면)을 "
               "특히 두껍게 쓰고, 미국 시황과의 연결 고리는 아래 '오늘 미국 세션 리포트'를 참고하세요.",
     }[session]
     session_goal = f"{session_focus}\n\n{common_order}"
@@ -707,6 +767,9 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 
 [방송 화면 캡처 — 캡처당 '시각 · 종목' + 관련 기사 링크 (그대로 활용)]
 {captures}
+
+[캡처 화면의 미장 종목 — 6번 언급종목 연관기사의 대상]
+{", ".join(capture_us) if capture_us else "(캡처에서 미국 종목을 찾지 못함 — 6번은 '해당 없음'으로)"}
 
 [화면 캡처 원문 판독 (광고 제외, 시간순)]
 {_material_digest(vision_results)}

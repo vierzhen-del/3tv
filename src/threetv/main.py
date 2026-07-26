@@ -35,7 +35,7 @@ from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
 from .obsidian_archive import archive_report, read_us_section_today
-from .report import extract_mentions, generate_report
+from .report import extract_mentions, generate_report, us_stocks_in_captures
 from .transcribe import transcribe
 from .vision import analyze_frames
 
@@ -189,7 +189,12 @@ def run(args: argparse.Namespace) -> int:
 
     # 5.5 뉴스 브리핑용 기사 수집 (네이버 검색 API — 무료 25,000건/일)
     #     언급 종목 + 보유종목 이름으로 검색해 중복 제거 후 리포트에 브리핑으로 싣는다
-    briefing_names = [v["name"] for v in verified if v.get("name")][:8]
+    #     대상 우선순위: ① 캡처 화면에 뜬 미장 종목(사용자 확정 기준) ② 언급 종목 ③ 보유종목
+    briefing_names = us_stocks_in_captures(vision_results)
+    briefing_names += [
+        v["name"] for v in verified
+        if v.get("name") and v["name"] not in briefing_names
+    ][: max(0, 8 - len(briefing_names))]
     briefing_names += [
         h["name"] for h in holdings_data["holdings"]
         if h.get("name") and h["name"] not in briefing_names
