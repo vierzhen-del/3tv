@@ -233,14 +233,22 @@ def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
     quotes.sort(key=lambda q: order.get(q["ticker"], 999))
     log.info("주요 지표 조회: %d/%d건 성공", len(quotes), len(indices_cfg))
 
-    # 기준일이 섞여 있으면 섹션 제목의 단일 기준일 표기가 오해를 부른다 — 로그로 남긴다
+    # 기준일이 섞여 있으면 섹션 제목의 단일 기준일 표기가 오해를 부른다.
+    # 대표 기준일보다 오래된 항목엔 stale 플래그를 달아, 리포트가 그 항목만
+    # 자기 날짜를 함께 쓰도록 한다 (2026-07-26 실측: KOSPI200이 8일 낡은 7/16 데이터).
     dates = [q["asof"] for q in quotes if q.get("asof")]
     if dates:
         common = max(set(dates), key=dates.count)
-        stale = [f"{q['name']}({q['asof']})" for q in quotes
-                 if q.get("asof") and q["asof"] != common]
-        if stale:
-            log.warning("기준일 불일치 (대표 %s): %s", common, ", ".join(stale[:10]))
+        mismatched = []
+        for q in quotes:
+            a = q.get("asof")
+            if not a or a == common:
+                continue
+            mismatched.append(f"{q['name']}({a})")
+            if a < common:      # ISO 날짜라 문자열 비교로 충분
+                q["stale"] = True
+        if mismatched:
+            log.warning("기준일 불일치 (대표 %s): %s", common, ", ".join(mismatched[:10]))
     return quotes
 
 

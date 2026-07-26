@@ -242,3 +242,37 @@ def test_fetch_news_prepends_real_articles(monkeypatch):
     got = market.fetch_news("엔비디아", "US", "NVDA")
     assert got[0]["title"] == "실제 기사"        # 실제 기사가 검색 링크보다 앞
     assert len(got) > 1                          # 검색 링크도 함께
+
+
+def test_stale_asof_gets_flagged(monkeypatch):
+    """대표 기준일보다 오래된 항목엔 stale 플래그 — 섹션 제목의 단일 날짜와 다르므로.
+
+    2026-07-26 실측: 대표 7/24인데 KOSPI200만 7/16 데이터였다.
+    """
+    def fake_batch(cfg):
+        out = []
+        for t, n in cfg.items():
+            asof = "2026-07-16" if t == "^KS200" else "2026-07-24"
+            out.append(market._fmt_quote(n, t, "US", 100.0, 1.0, asof, 99.0))
+        return out
+    monkeypatch.setattr(market, "us_quotes_batch", fake_batch)
+    quotes = market.fetch_indices(
+        {"^DJI": "다우존스", "^IXIC": "나스닥", "^KS200": "KOSPI200"})
+    by = {q["ticker"]: q for q in quotes}
+    assert by["^KS200"].get("stale") is True
+    assert "stale" not in by["^DJI"] and "stale" not in by["^IXIC"]
+
+
+def test_newer_asof_not_marked_stale(monkeypatch):
+    """대표보다 최신인 항목(환율 등)은 stale이 아니다."""
+    def fake_batch(cfg):
+        out = []
+        for t, n in cfg.items():
+            asof = "2026-07-26" if t == "KRW=X" else "2026-07-24"
+            out.append(market._fmt_quote(n, t, "US", 100.0, 1.0, asof, 99.0))
+        return out
+    monkeypatch.setattr(market, "us_quotes_batch", fake_batch)
+    quotes = market.fetch_indices(
+        {"^DJI": "다우존스", "^IXIC": "나스닥", "KRW=X": "원/달러"})
+    by = {q["ticker"]: q for q in quotes}
+    assert "stale" not in by["KRW=X"]

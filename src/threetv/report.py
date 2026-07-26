@@ -330,7 +330,9 @@ def _quote_line(q: dict) -> str:
     """
     icon = q.get("icon") or ""
     sign = f"{q['direction']}{abs(q['change_pct'])}%"
-    return f"• {q['name']}: {q['close']:,} {icon} {sign}".replace("  ", " ")
+    # 대표 기준일보다 오래된 항목만 자기 날짜를 병기 (섹션 제목과 다르다는 표시)
+    tail = f" ⚠️({q['asof']} 기준)" if q.get("stale") and q.get("asof") else ""
+    return f"• {q['name']}: {q['close']:,} {icon} {sign}{tail}".replace("  ", " ")
 
 
 def _asof_label(quotes: list[dict]) -> str:
@@ -650,6 +652,8 @@ def generate_report(
 - **종가 기준일은 섹션 제목에 한 번만** 쓰세요 (예: `💹 주요 지표 (7/24 종가 기준)`).
   줄마다 `[2026-07-24 종가]`처럼 반복하면 지저분해집니다 — 절대 줄 끝에 붙이지 마세요.
   기준일은 검증 시세의 `asof` 필드를 쓰고, 항목별로 다르면 그 항목에만 예외 표기하세요.
+  특히 `stale: true`인 항목은 **대표 기준일보다 오래된 데이터**이니 반드시
+  `⚠️(7/16 기준)`처럼 자기 날짜를 병기하고 최신 값이 아님을 밝히세요.
 - **등락 아이콘을 반드시 붙이세요** — 각 시세의 `icon` 필드(📈 상승 / 📉 하락 / ➖ 보합)를
   그대로 사용하고, 형식은 다음을 따르세요:
   `• 나스닥: 20,123.45 📈 ▲1.23%`
