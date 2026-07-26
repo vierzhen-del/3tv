@@ -368,3 +368,31 @@ def test_missing_required_section_falls_back(tmp_path, monkeypatch):
     data = _generate(tmp_path, transcript="전사 내용")
     assert data["title_keyword"] == "원자료시황"
     assert "AI 요약 없음" in data["markdown_report"]
+
+
+def test_verbatim_caps_very_long_screen(tmp_path, llm_down):
+    """시세 표처럼 줄이 많은 화면은 상위 일부만 — 다른 섹션을 밀어내면 안 된다.
+
+    2026-07-26 실측: 07:59 종목 시세판이 50줄 넘게 그대로 실려 리포트를 잠식했다.
+    """
+    rows = "\n".join(f"종목{i}, {1000+i}, ▲ {i}, 0.5, {i*100}" for i in range(60))
+    vision = [{"timestamp_sec": 14 * 60, "type": "자료화면", "text": rows}]  # 07:45+14m=07:59
+    md = report_mod.generate_report(
+        SETTINGS, "kr", vision, "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert "화면 원문" in md
+    assert "종목0," in md and "종목14," in md      # 상위 15줄은 보존
+    assert "종목59," not in md                      # 뒤쪽은 생략
+    assert "총 60줄 중 15줄 표시" in md
+
+
+def test_verbatim_keeps_short_screen_intact(tmp_path, llm_down):
+    """요약 슬라이드처럼 짧은 화면은 통째로 보존한다."""
+    screen = ("다우 +0.27% / 나스닥 +1.30%\nWTI $71.8 / 달러인덱스 100.7\n"
+              "국채 10년 4.54%, 2년 4.17%")
+    vision = [{"timestamp_sec": 15 * 60, "type": "자료화면", "text": screen}]
+    md = report_mod.generate_report(
+        SETTINGS, "kr", vision, "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert screen in md
+    assert "줄 표시" not in md          # 생략 표기 없음
