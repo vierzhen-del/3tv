@@ -130,3 +130,69 @@ def test_network_error_returns_empty(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError("timeout")))
     assert news.naver_news("q") == []
+
+
+def test_published_kst_parsed_from_naver_pubdate(monkeypatch):
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp(200, {"items": [ITEM]}))
+    got = news.naver_news("마이크론")
+    assert got[0]["published_kst"] == "07/24 21:00"
+
+
+def test_published_kst_blank_when_pubdate_unparseable(monkeypatch):
+    bad = {**ITEM, "pubDate": "이상한 날짜"}
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp(200, {"items": [bad]}))
+    got = news.naver_news("마이크론")
+    assert got[0]["published_kst"] == ""
+    assert got[0]["published"] == "이상한 날짜"       # 원문은 보존 (버리지 않음)
+
+
+def test_news_items_have_no_datetime_object():
+    """collect_briefing 반환값은 report.py의 json.dumps에 그대로 들어간다 —
+    datetime 객체가 남아있으면 그 즉시 리포트 생성이 죽는다."""
+    import requests
+    import threetv.news as news_mod
+    got = news_mod._normalize([ITEM])
+    assert all(not hasattr(v, "isoformat") for v in got[0].values())
+
+
+def test_collect_briefing_recency_hours_filters_old_articles(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    now = datetime.now(timezone(timedelta(hours=9)))
+    fresh = {**ITEM, "title": "최신 기사", "originallink": "https://a/fresh",
+             "pubDate": format_datetime(now - timedelta(hours=2))}
+    stale = {**ITEM, "title": "이틀 전 기사", "originallink": "https://a/stale",
+             "pubDate": format_datetime(now - timedelta(hours=48))}
+    import requests
+    monkeypatch.setattr(requests, "get",
+                        lambda *a, **k: FakeResp(200, {"items": [stale, fresh]}))
+    got = news.collect_briefing(["마이크론"], per_query=2, recency_hours=24)
+    assert [g["title"] for g in got] == ["최신 기사"]      # 24시간 이전 기사는 제외
+
+
+def test_collect_briefing_sorts_newest_first(monkeypatch):
+    old = {**ITEM, "title": "오래된 기사", "originallink": "https://a/old",
+           "pubDate": "Mon, 27 Jul 2026 06:00:00 +0900"}
+    new = {**ITEM, "title": "새 기사", "originallink": "https://a/new",
+           "pubDate": "Mon, 27 Jul 2026 20:00:00 +0900"}
+    import requests
+    monkeypatch.setattr(requests, "get",
+                        lambda *a, **k: FakeResp(200, {"items": [old, new]}))
+    got = news.collect_briefing(["마이크론"], per_query=2)
+    assert [g["title"] for g in got] == ["새 기사", "오래된 기사"]
+
+
+def test_collect_briefing_max_queries_caps_search_calls(monkeypatch):
+    calls: list[str] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(params["query"])
+        return FakeResp(200, {"items": []})
+
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+    news.collect_briefing(["a", "b", "c", "d"], per_query=1, max_queries=2)
+    assert calls == ["a", "b"]

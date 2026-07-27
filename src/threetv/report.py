@@ -217,6 +217,30 @@ def _fold_news_rest(news_md: str) -> str:
     return f"{head.strip()}\n\n{tg_format.fold(title, rest)}"
 
 
+# LLM이 프롬프트 지시를 무시하고 검색 결과 페이지 URL을 "기사"로 만들어낼 때의
+# 최후 안전장치 — 실제 기사가 아닌 검색 페이지 도메인/경로 패턴만 잡는다.
+_SEARCH_URL_RE = re.compile(
+    r"\[([^\]\n]+)\]\("
+    r"(?:https?://)?(?:www\.)?"
+    r"(?:search\.naver\.com/search\.naver"
+    r"|finance\.yahoo\.com/quote/[^)/]+/news/?"
+    r"|(?:www\.)?google\.com/search)"
+    r"[^)\n]*\)"
+)
+
+
+def _strip_search_links(md: str) -> str:
+    """`[제목](검색결과URL)` → `제목` — 링크만 벗기고 텍스트는 남긴다.
+
+    검색 결과 페이지는 기사가 아니다. `market.fetch_news()`가 더 이상
+    `search_links()`를 자동으로 붙이지 않지만, LLM이 프롬프트를 무시하고 직접
+    검색 URL을 만들어낼 가능성은 남아있어 출력 직전에 한 번 더 걸러낸다.
+    """
+    if not md:
+        return md
+    return _SEARCH_URL_RE.sub(lambda m: m.group(1), md)
+
+
 def _parse_sections(text: str) -> dict:
     """구분선 기반 리포트 응답 파싱 (JSON 대신 쓰는 이유는 아래).
 
@@ -238,6 +262,9 @@ def _parse_sections(text: str) -> dict:
         raise ValueError(f"구분선 형식이 아닙니다: {text[:200]}")
 
     news_md = _fold_news_rest(sec.get("NEWS", ""))
+    daily = sec.get("DAILY", "").strip()
+    if daily:
+        news_md += f"\n\n### 📰 데일리 주요 종목기사 정리\n{daily}"
     parts = [sihwang] + ([news_md] if news_md else [])
     return {
         "title_keyword": (sec.get("TITLE", "").splitlines() or [""])[0].strip(),
@@ -282,6 +309,29 @@ def _briefing_lines(news_briefing: list[dict] | None) -> str:
         if n.get("summary"):
             lines.append(f"  {n['summary'][:160]}")
     return "\n".join(lines)
+
+
+def _briefing_grouped(news_briefing: list[dict] | None) -> str:
+    """수집 기사를 종목(query)별로 묶어 표시 — 열화(LLM 없음) 경로의 데일리 정리용.
+
+    LLM이 없으면 이슈 단위 요약(===DAILY===)을 만들 수 없으니 그 대신 종목별로
+    실제 기사 원문 목록을 보여준다. `news.py`가 이미 최신순으로 정렬해 넘긴다.
+    """
+    if not news_briefing:
+        return ""
+    by_query: dict[str, list[dict]] = {}
+    for n in news_briefing:
+        by_query.setdefault(n.get("query") or "기타", []).append(n)
+    blocks = []
+    for q, items in by_query.items():
+        lines = [f"**{q}**"]
+        for n in items:
+            when = f" ({n['published_kst']})" if n.get("published_kst") else ""
+            lines.append(f"• [{n['title']}]({n['url']}){when}")
+            if n.get("summary"):
+                lines.append(f"  {n['summary'][:160]}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 VERBATIM_MAX_LINES = 15   # '화면 원문' 보존 시 한 화면당 최대 줄 수
@@ -370,6 +420,7 @@ def _capture_blocks(
     verified_mentions: list[dict],
     base_kst: str,
     verbatim_window: list | None = None,
+    news_briefing: list[dict] | None = None,
 ) -> str:
     """캡처 화면당 2줄 — ① 시각·종목·타이틀 ② 연관 기사 링크.
 
@@ -377,13 +428,24 @@ def _capture_blocks(
     **원문 줄 구성을 그대로** 옮긴다. 그 화면은 배치 자체가 정보이기 때문이다.
     단 그 구간의 **개별 종목 시세판은 제외**한다 (사용자 확정: 08시 전후는 흰 배경
     그림 슬라이드만 보고 개별 주가는 반영하지 않는다).
-    """
-    from . import market
 
+    기사 링크는 `verified_mentions[].news`(검증 시세와 함께 조회한 실제 기사) →
+    `news_briefing`(종목명으로 미리 검색해둔 실제 기사, `query` 필드로 매칭) 순으로
+    찾는다. 둘 다 없으면 **링크 없이 종목명만** — 검색 결과 페이지 URL로 대체하지
+    않는다(2026-07-27 실측: `verified_mentions`가 비면 캡처 링크가 전부
+    `search.naver.com` 검색 URL로 떨어졌다. `us_stocks_in_captures()`가
+    `news_briefing`의 1순위 검색 대상이라(main.py) 캡처 종목의 실제 기사는
+    이미 브리핑에 들어 있다 — 여기서 연결만 하면 된다).
+    """
     news_map = {
         (v.get("name") or "").strip(): v.get("news") or []
         for v in verified_mentions if v.get("name")
     }
+    briefing_map: dict[str, list[dict]] = {}
+    for n in news_briefing or []:
+        q = (n.get("query") or "").strip()
+        if q:
+            briefing_map.setdefault(q, []).append(n)
     blocks: list[str] = []
     skipped_tables = 0
     for r in vision_results:
@@ -415,12 +477,12 @@ def _capture_blocks(
                 head += f" · {', '.join(names[:6])}"
             blocks.append(f"{head}\n{title or '(텍스트 없음)'}")
 
-        # 2번째 줄: 연관 기사 링크 (종목별 1건씩)
+        # 2번째 줄: 연관 기사 링크 (종목별 1건씩). 실제 기사가 없으면 그 종목은
+        # 링크 줄에서 빠진다 — 종목명 자체는 이미 위쪽 head 줄에 있다.
         links: list[str] = []
         for s in stocks[:4]:
             nm = str(s["name"]).strip()
-            mkt = (s.get("market") or "").upper() or "KR"
-            items = news_map.get(nm) or market.search_links(nm, mkt)
+            items = news_map.get(nm) or briefing_map.get(nm)
             if items:
                 n = items[0]
                 links.append(f"[{nm}]({n['url']})")
@@ -580,6 +642,7 @@ def _fallback_report(
     captures = _capture_blocks(
         vision_results, verified_mentions,
         scfg.get("start_kst", "00:00"), scfg.get("verbatim_window"),
+        news_briefing=news_briefing,
     )
 
     banner = (
@@ -658,12 +721,15 @@ def _fallback_report(
     if rest_lines:
         news_body += f"\n\n{NEWS_REST_MARK}\n" + "\n".join(rest_lines)
     news_md = f"### 📈 방송 언급 종목 · 관련 기사\n{_fold_news_rest(news_body)}"
-    # LLM 요약은 불가하니 기사 목록을 그대로 (중복 제거는 수집 단계에서 이미 완료)
-    briefing_block = _briefing_lines(news_briefing)
-    if briefing_block:
-        news_md += "\n\n### 📰 뉴스 브리핑 (수집 원문 — AI 요약 없음)\n" + tg_format.fold(
-            "기사 목록 — 눌러서 펼치기", briefing_block
-        )
+    # LLM이 없어 이슈 단위 요약(===DAILY===)은 만들 수 없다 — 대신 종목별로
+    # 실제 기사 원문을 묶어 보여준다(중복 제거·최신순 정렬은 news.py가 이미 처리)
+    briefing_grouped = _briefing_grouped(news_briefing)
+    if briefing_grouped:
+        news_md += "\n\n### 📰 데일리 기사 정리 (AI 요약 없음 — 종목별 원문 목록)\n" \
+            + tg_format.fold(
+                f"오늘 수집 기사 {len(news_briefing or [])}건 — 눌러서 펼치기",
+                briefing_grouped,
+            )
 
     log.warning("열화 리포트 생성 (LLM 없이 원자료 기반): %s / 화면 %d장, 지표 %d건, 전사 %d자",
                 label, len(vision_results), len(indices), len(transcript))
@@ -698,7 +764,10 @@ JSON 객체로만 답하세요:
 (B) 음성 전사:
 {transcript[:40000]}"""
     try:
-        data = _parse_json_obj(_call_llm(models, prompt, max_tokens=4000))
+        # 4000으로는 gemini-2.5의 사고 토큰과 겹쳐 최대 40개 종목 JSON이 잘렸다
+        # (2026-07-26/27 실측: 확보 7,626자/8,922자에서 MAX_TOKENS로 두 모델 다 실패
+        #  → verified_mentions=[] → 캡처 링크가 전부 검색 URL로 떨어짐)
+        data = _parse_json_obj(_call_llm(models, prompt, max_tokens=12000))
         mentions = data.get("mentions", [])
         log.info("언급 종목 추출: %d개", len(mentions))
         return mentions
@@ -734,7 +803,8 @@ def generate_report(
     today = now_kst().strftime("%Y-%m-%d (%a)")
     base_kst = scfg.get("start_kst", "00:00")
     vwin = scfg.get("verbatim_window")
-    captures = _capture_blocks(vision_results, verified_mentions, base_kst, vwin)
+    captures = _capture_blocks(vision_results, verified_mentions, base_kst, vwin,
+                               news_briefing=news_briefing)
     # ===NEWS===(종목 기사검색)의 대상 — 캡처 화면에 실제로 뜬 미장 종목
     capture_us = us_stocks_in_captures(vision_results)
     # 본문 노출 종목(나머지는 접기 블록으로)
@@ -802,10 +872,25 @@ def generate_report(
 - 링크는 [언급 종목 검증 시세]의 `news` 배열과 [뉴스 브리핑 기사]에 주어진 url만 사용.
   **url을 절대 새로 만들지 마세요.** 마크다운 링크 형식 `[제목](url)`을 반드시 지키세요
   (텔레그램에서 제목만 보이는 하이퍼링크로 변환됩니다).
+  ⚠️ **`search.naver.com`·`google.com/search`처럼 검색 결과 페이지 URL을 링크로
+  쓰지 마세요 — 그건 기사가 아닙니다.** 해당 종목의 실제 기사 url이 위 두 곳에
+  없으면 링크 없이 종목명만 쓰고 다음 종목으로 넘어가세요.
 - ⚠️ **[주요종목] 목록에 있는 종목을 먼저** 쓰고, 다 쓴 뒤 `---기타---` 를 한 줄로 넣고
   그 아래에 나머지 종목을 쓰세요. `---기타---` 아래는 접기(펼치기) 블록이 되어
   눌러야 보입니다. 표식을 빠뜨리지 마세요.
-- 겹치는 기사는 묶어 사안별 3줄 이내로 요약하세요."""
+- 겹치는 기사는 묶어 사안별 3줄 이내로 요약하세요.
+
+### 리포트 ③ 데일리 주요 종목기사 정리 (===DAILY===)
+
+[뉴스 브리핑 기사]에 오늘 수집된 기사 전체가 있습니다. 이걸 **종목별이 아니라
+이슈(사안) 단위로 묶어** 정리하세요 — ===NEWS===는 종목 기준, 이건 오늘 하루 전체를
+관통하는 사안 기준이라 관점이 다릅니다.
+- 같은 사안을 다루는 기사는 묶어 하나의 이슈로. 상위 6~8개 이슈만, 중요도 순.
+- 이슈당 정확히 2줄: 1줄 `• **이슈 제목** — 핵심 내용 한 줄`,
+  2줄 `  🔗 [기사제목](url) · [기사제목](url)` (url은 [뉴스 브리핑 기사]에 있는 것만)
+- [보유/관심 종목 목록]이 걸린 이슈는 앞쪽에 배치하세요.
+- 위 화법 규칙(완곡 표현 금지·단정형 명사구·인용 압축)을 여기도 그대로 적용하세요.
+- [뉴스 브리핑 기사]가 비어 있으면 "오늘 수집된 기사가 없습니다"라고만 쓰세요."""
 
     session_focus = {
         "us": "이 방송은 전일 미국장 마감 리뷰입니다. 1번의 미국장 정리를 특히 두껍게 쓰세요.",
@@ -865,7 +950,8 @@ def generate_report(
     2줄: `🔗 [종목명](기사url) · [종목명](기사url)`
   시각은 `06:03`처럼 **짧게(HH:MM)** — 초 단위나 `[00:03:15]` 같은 표기는 쓰지 마세요.
   아래 [방송 화면 캡처] 블록에 이미 이 형식으로 정리돼 있으니 **그 내용과 링크를
-  그대로 활용**하고, url을 새로 만들지 마세요.
+  그대로 활용**하고, url을 새로 만들지 마세요. 그 블록에 링크가 없는 종목은
+  **검색 URL을 만들어 채우지 말고 링크 없이 종목명만** 남기세요.
 - **`화면 원문`으로 표시된 캡처(07:45~08:10 요약 슬라이드)는 요약하지 말고
   화면의 줄 구성을 그대로** 옮기세요 — 항목 순서·구분자·수치를 원문대로 유지.
   단 **시세 표처럼 줄이 매우 많은 화면은 상위 15줄까지만** 옮기고 `…(이하 생략)`으로
@@ -903,6 +989,8 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 마지막 줄에 디스클레이머를 넣으세요.
 ===NEWS===
 리포트 ② 종목 기사검색 — 주요종목 먼저, 그다음 `---기타---` 한 줄, 그 아래 나머지 종목.
+===DAILY===
+리포트 ③ 데일리 주요 종목기사 정리 — 이슈 단위 6~8개, 항목당 2줄.
 ===HOLDINGS===
 보유종목마다 한 줄씩: 종목명 | O 또는 X | 언급 맥락
 (예: 삼성전자 | O | 미 상무장관이 미국 생산 확대 촉구
@@ -947,6 +1035,16 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
                 raise RuntimeError(f"리포트 생성 결과에 {key} 누락")
         if not data["reports"]["sihwang"].strip():
             raise RuntimeError("리포트 생성 결과에 시황 본문(===SIHWANG===) 누락")
+        # LLM의 ===DAILY=== 요약 아래에 오늘 수집된 기사 원문 전체를 접어서 붙인다 —
+        # 요약이 놓친 기사도 원하면 펼쳐서 확인할 수 있게 (검증·투명성 목적)
+        raw_articles = _briefing_lines(news_briefing)
+        if raw_articles:
+            fold_block = tg_format.fold(
+                f"오늘 수집 기사 원문 {len(news_briefing or [])}건 — 눌러서 펼치기",
+                raw_articles,
+            )
+            data["reports"]["news"] = f"{data['reports']['news']}\n\n{fold_block}"
+            data["markdown_report"] = f"{data['markdown_report']}\n\n{fold_block}"
     except Exception as e:
         log.error("LLM 리포트 생성 실패 → 원자료 기반 열화 리포트로 전환: %s", e)
         data = _fallback_report(
@@ -954,6 +1052,12 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
             verified_mentions, holdings_data, holdings_quotes, reason=str(e)[:200],
             news_briefing=news_briefing, flows=flows,
         )
+
+    # 최후 안전장치 — LLM이 프롬프트를 무시하고 검색 결과 페이지 URL을 직접
+    # 만들어냈을 경우에 대비해 링크만 벗긴다 (실제 기사 URL은 건드리지 않음)
+    for key in ("telegram_text", "markdown_report"):
+        data[key] = _strip_search_links(data.get(key, ""))
+    data["reports"] = {k: _strip_search_links(v) for k, v in data["reports"].items()}
 
     out_file = out_dir / "report.json"
     out_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -219,10 +219,13 @@ def run(args: argparse.Namespace) -> int:
         h["name"] for h in holdings_data["holdings"]
         if h.get("name") and h["name"] not in briefing_names
     ][:4]
+    news_cfg = settings.get("news", {})
     news_briefing = news.collect_briefing(
         briefing_names,
-        per_query=settings.get("news", {}).get("per_query", 4),
-        limit=settings.get("news", {}).get("briefing_limit", 20),
+        per_query=news_cfg.get("per_query", 4),
+        limit=news_cfg.get("briefing_limit", 20),
+        recency_hours=news_cfg.get("recency_hours"),
+        max_queries=news_cfg.get("max_queries"),
     )
 
     # 5.6 리포트 6번 섹션용 수급 데이터 (전일 수급주체·순매수 top10·ETF)

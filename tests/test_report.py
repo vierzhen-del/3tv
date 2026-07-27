@@ -294,14 +294,14 @@ def test_fallback_includes_news_briefing(tmp_path, llm_down):
         news_briefing=briefing,
     )
     md = data["markdown_report"]
-    assert "뉴스 브리핑" in md
+    assert "데일리 기사 정리" in md
     assert "[마이크론 투자 확대](https://news/mu)" in md
     assert "메모리 슈퍼사이클 기대" in md
 
 
 def test_briefing_omitted_when_no_articles(tmp_path, llm_down):
     md = _generate(tmp_path, transcript="")["markdown_report"]
-    assert "뉴스 브리핑" not in md
+    assert "데일리 기사 정리" not in md
 
 
 def test_sections_reject_non_sectioned_text():
@@ -499,3 +499,74 @@ def test_us_stocks_in_captures_respects_limit():
         for n in range(5)
     ]
     assert len(report_mod.us_stocks_in_captures(vision, limit=5)) == 5
+
+
+# ───────────── 검색 URL 퇴출 (2026-07-27/28 실장애: verified_mentions가 비면
+# 캡처 화면 링크가 전부 search.naver.com 검색 페이지로 떨어졌다) ─────────────
+
+def test_capture_blocks_uses_briefing_when_verified_mentions_empty():
+    """verified_mentions가 비어도 news_briefing에서 실제 기사를 찾아 연결한다.
+
+    2026-07-26/27 실장애 재현 조건: extract_mentions가 MAX_TOKENS로 실패하면
+    verified=[] 상태로 리포트가 만들어졌다. 그래도 네이버 브리핑 수집(main.py가
+    캡처 종목을 1순위로 검색)은 별도로 성공하므로, 그 기사를 캡처 링크에
+    연결할 수 있어야 한다.
+    """
+    vision = [{"timestamp_sec": 0, "type": "자료화면", "text": "엔비디아 실적 프리뷰",
+               "stocks": [{"name": "엔비디아", "market": "US"}]}]
+    briefing = [{"title": "엔비디아 실적 서프라이즈", "url": "https://real.news/nvda-1",
+                 "query": "엔비디아", "summary": ""}]
+    out = report_mod._capture_blocks(vision, [], "05:55", None, news_briefing=briefing)
+    assert "[엔비디아](https://real.news/nvda-1)" in out
+    assert "search.naver.com" not in out
+
+
+def test_capture_blocks_no_link_when_no_article_found():
+    """기사를 못 찾은 종목은 검색 URL로 채우지 않고 링크 없이 종목명만 남긴다."""
+    vision = [{"timestamp_sec": 0, "type": "자료화면", "text": "알 수 없는 종목 언급",
+               "stocks": [{"name": "무명종목", "market": "US"}]}]
+    out = report_mod._capture_blocks(vision, [], "05:55", None, news_briefing=[])
+    assert "무명종목" in out            # head 줄에는 종목명이 남는다
+    assert "🔗" not in out              # 기사 링크 줄 자체가 없다
+    assert "search.naver.com" not in out
+
+
+def test_capture_blocks_prefers_verified_mentions_over_briefing():
+    vision = [{"timestamp_sec": 0, "type": "자료화면", "text": "삼성전자 소식",
+               "stocks": [{"name": "삼성전자", "market": "KR"}]}]
+    verified = [{"name": "삼성전자",
+                 "news": [{"title": "검증경로 기사", "url": "https://verified/1"}]}]
+    briefing = [{"title": "브리핑경로 기사", "url": "https://briefing/1", "query": "삼성전자"}]
+    out = report_mod._capture_blocks(vision, verified, "05:55", None, news_briefing=briefing)
+    assert "https://verified/1" in out
+    assert "https://briefing/1" not in out
+
+
+def test_strip_search_links_removes_search_urls_keeps_real_articles():
+    md = (
+        "• [S&P500](https://search.naver.com/search.naver?where=news&query=S%26P500)\n"
+        "• [엔비디아 실적](https://real.news.co.kr/articles/12345)\n"
+        "• [야후 검색](https://finance.yahoo.com/quote/NVDA/news)\n"
+    )
+    out = report_mod._strip_search_links(md)
+    assert "search.naver.com" not in out
+    assert "finance.yahoo.com/quote/NVDA/news" not in out
+    assert "[S&P500]" not in out and "S&P500" in out           # 링크만 벗겨지고 텍스트는 남음
+    assert "[엔비디아 실적](https://real.news.co.kr/articles/12345)" in out  # 실제 기사는 보존
+
+
+def test_generate_report_strips_search_urls_from_llm_output(tmp_path, monkeypatch):
+    """LLM이 프롬프트를 어기고 검색 URL을 직접 만들어도 최종 출력에선 사라진다."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
+키워드
+===SIHWANG===
+## 요약
+내용
+===NEWS===
+• **테슬라**: 200 📈 ▲1%
+  🔗 [테슬라](https://search.naver.com/search.naver?where=news&query=테슬라)
+===END===""")
+    data = _generate(tmp_path, transcript="")
+    assert "search.naver.com" not in data["reports"]["news"]
+    assert "search.naver.com" not in data["markdown_report"]
+    assert "테슬라" in data["reports"]["news"]                  # 텍스트 자체는 남는다

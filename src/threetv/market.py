@@ -467,11 +467,14 @@ def search_links(name: str, market: str, ticker: str = "") -> list[dict]:
 
 
 def fetch_news(name: str, market: str, ticker: str = "", limit: int = 3) -> list[dict]:
-    """언급 종목의 관련 기사.
+    """언급 종목의 관련 기사 — **실제 기사 URL만** 반환한다.
 
     우선순위: ① 네이버 뉴스(한국어 기사, 국내·해외 종목 모두 커버)
              ② yfinance 뉴스(미국 종목 영문 기사)
-             ③ 검색 링크 (네트워크 없이 생성 — 항상 최소 1건 보장)
+    둘 다 실패하면 빈 리스트 — `search_links()`(검색 결과 페이지 URL)는 더 이상
+    자동으로 덧붙이지 않는다. 리포트에 "기사"라며 검색 페이지 링크가 박히는
+    문제(2026-07-27 실측)의 원인이라 여기서 끊는다. `search_links()` 함수 자체는
+    호출부가 명시적으로 최후수단으로 쓸 수 있게 남겨둔다.
     """
     from . import news as news_mod
 
@@ -492,4 +495,4 @@ def fetch_news(name: str, market: str, ticker: str = "", limit: int = 3) -> list
         except Exception as e:
             log.debug("뉴스 조회 실패 %s: %s", ticker, e)
 
-    return items[:limit] + search_links(name, market, ticker)
+    return items[:limit]
