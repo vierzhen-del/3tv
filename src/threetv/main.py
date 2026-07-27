@@ -27,15 +27,17 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import market, news
+from . import market, news, tg_format
 from .capture import CaptureError, capture_live_session, download_vod
 from .common import (load_env, load_holdings, load_settings, log, now_kst,
-                     output_dir, parse_duration, setup_logging)
+                     output_dir, parse_duration, setup_logging, window_offsets)
 from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
-from .obsidian_archive import archive_report, read_us_section_today
-from .report import extract_mentions, generate_report, us_stocks_in_captures
+from .obsidian_archive import (archive_report, obsidian_deeplink,
+                               read_us_section_today)
+from .report import (drop_etf_stocks, extract_mentions, generate_report,
+                     us_stocks_in_captures)
 from .transcribe import transcribe
 from .vision import analyze_frames
 
@@ -163,11 +165,25 @@ def run(args: argparse.Namespace) -> int:
     # 4. Whisper 음성 전사 (models.whisper_disabled=true면 생략)
     #    끄면 리포트는 화면 캡처(자료화면) + 종목 시세 + 뉴스링크로만 구성된다.
     #    45분 오디오 전사에 약 12분이 걸려 런타임의 대부분을 차지했다.
-    if settings["models"].get("whisper_disabled"):
+    #    단 sessions.<s>.transcribe_window가 있으면 그 구간만은 전사한다 —
+    #    07:50~08:05의 '오늘 시황 전망' 발언은 화면 캡처로 대체할 수 없기 때문
+    #    (전사 전문은 리포트에 싣지 않고 전망 요약 근거로만 쓴다. report.py 참고)
+    twin = window_offsets(session_cfg.get("start_kst", "00:00"),
+                          session_cfg.get("transcribe_window"))
+    if not settings["models"].get("whisper_disabled"):
+        transcript = transcribe(video, out_dir, settings["models"]["whisper"])
+    elif twin:
+        log.info("whisper_disabled=true지만 %s 구간(%ds부터 %ds)은 시황전망용으로 전사",
+                 session_cfg["transcribe_window"], *twin)
+        try:
+            transcript = transcribe(video, out_dir, settings["models"]["whisper"],
+                                    start_sec=twin[0], dur_sec=twin[1])
+        except Exception as e:
+            log.error("구간 전사 실패(무시하고 화면 캡처만으로 진행): %s", e)
+            transcript = ""
+    else:
         log.info("whisper_disabled=true → 음성 전사 생략 (화면 캡처 기반으로 진행)")
         transcript = ""
-    else:
-        transcript = transcribe(video, out_dir, settings["models"]["whisper"])
 
     # 4.5 방송 종료 감지: 진행자가 보드형 광고 소개를 시작하면 이후 내용 제외
     if session_cfg.get("end_on_host_ad"):
@@ -176,6 +192,10 @@ def run(args: argparse.Namespace) -> int:
         )
     # 최종 분석 대상은 자료화면만 (광고/스튜디오/진행자광고 제외)
     vision_results = [r for r in all_vision if r.get("type") == "자료화면"]
+    # 이 채널은 시황에서 ETF를 다루지 않는다 — 화면의 ETF는 전부 협찬·광고이므로 제거
+    n_etf = drop_etf_stocks(vision_results)
+    if n_etf:
+        log.info("ETF 종목 %d건 제거 (이 채널은 ETF를 광고로 취급)", n_etf)
     log.info("최종 분석 자료화면: %d장", len(vision_results))
 
     # 5. 종목 추출 → 실시세 검증
@@ -222,20 +242,39 @@ def run(args: argparse.Namespace) -> int:
     )
 
     # 7. 전송 (텔레그램 → 카카오, best-effort)
-    header = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']} [{label}]"
-    telegram_text = f"{header}\n\n{report['telegram_text']}"
+    #    세션당 2건 — ① 시황 ② 종목 기사검색. 한 건에 다 담으면 기사 목록이
+    #    본문을 잠식해 읽히지 않았다(2026-07-27 실물 스크린샷 지적).
+    base = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']}"
+    reports = report.get("reports") or {"sihwang": report["telegram_text"], "news": ""}
+    deeplink = obsidian_deeplink(settings.get("obsidian", {}))
+    parts = [
+        (f"{base} [{label}]", reports.get("sihwang", "")),
+        (f"{base} [{label} · 종목기사]", reports.get("news", "")),
+    ]
+    messages = [f"**{head}**\n\n{body}" for head, body in parts if body.strip()]
+    if messages and deeplink:
+        messages[-1] += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
+
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
     else:
-        send_telegram(telegram_text, settings["telegram"]["max_message_len"])
+        max_len = settings["telegram"]["max_message_len"]
+        for md in messages:
+            # HTML로 보내야 링크가 제목만 보이고 접기 블록이 눌러서 펼쳐진다
+            send_telegram(tg_format.to_telegram_html(md), max_len, html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(telegram_text)
+            # 카카오는 HTML/접기를 지원하지 않으므로 접기 마커만 걷어낸 평문으로
+            send_kakao_memo(tg_format.to_plain("\n\n".join(messages)))
 
     # 8. 아카이브 (옵시디안 볼트 → S26/탭S9 동기화, 노션 선택)
     if not args.skip_archive:
         archive_report(
             settings["obsidian"], session, report["title_keyword"],
-            report["markdown_report"], indices, report.get("holdings_mentioned", []),
+            tg_format.to_obsidian(reports.get("sihwang_md")
+                                  or reports.get("sihwang")
+                                  or report["markdown_report"]),
+            indices, report.get("holdings_mentioned", []),
+            news_markdown=tg_format.to_obsidian(reports.get("news", "")),
         )
         if settings.get("notion", {}).get("enabled"):
             from .notion_archive import archive_to_notion

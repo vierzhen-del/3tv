@@ -33,6 +33,11 @@ sessions:
     # 이 시간대 화면은 압축하지 않고 **화면 구성 그대로** 리포트에 옮긴다.
     # (매일 방송되는 주요지표 요약 슬라이드 — 원문 배치가 곧 정보다)
     verbatim_window: ["07:45", "08:10"]
+    # 이 구간만 음성 전사한다 (models.whisper_disabled=true여도 예외적으로 실행).
+    # 진행자가 오늘 시황 전망을 말하는 구간 — **전망 요약에만** 쓰고 종목 시세·수치는
+    # 화면 캡처를 우선한다(report.py 프롬프트에 명시). 15분이라 CPU 전사 ~4분.
+    # 비우면 구간 전사도 하지 않는다.
+    transcribe_window: ["07:50", "08:05"]
 
 capture:
   resolution: 480           # OCR에 충분 + 용량 절약
@@ -159,6 +164,10 @@ obsidian:
   vault_repo: "vierzhen-del/3tv-reports"
   vault_branch: "main"
   base_path: "3protv"       # repo/볼트 내 저장 루트 → 3protv/YYYY/MM/파일.md
+  # 탭S9/S26의 옵시디안 볼트 폴더명 — 텔레그램 하단 obsidian:// 딥링크에 쓴다.
+  # ⚠️ 노션 문서의 "RaeVault"는 별칭이고 실제 폴더명은 vierzhen_home 이다.
+  # 비우면 딥링크 줄을 넣지 않는다.
+  vault_name: "vierzhen_home"
 
 notion:
   enabled: false            # NOTION_API_KEY/NOTION_PARENT_ID 등록 후 true로

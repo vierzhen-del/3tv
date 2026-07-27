@@ -10,6 +10,7 @@ import json
 import pytest
 
 from threetv import report as report_mod
+from threetv import tg_format
 
 SETTINGS = {
     "sessions": {
@@ -358,16 +359,56 @@ def test_vision_parses_json_with_literal_newlines():
 
 
 def test_missing_required_section_falls_back(tmp_path, monkeypatch):
-    """필수 섹션이 비면 열화 경로로 — 빈 리포트 발행 방지."""
+    """시황 본문이 비면 열화 경로로 — 빈 리포트 발행 방지."""
     monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
 키워드
-===TELEGRAM===
-===MARKDOWN===
-본문
+===SIHWANG===
+===NEWS===
+기사만 있고 시황이 없음
 ===END===""")
     data = _generate(tmp_path, transcript="전사 내용")
     assert data["title_keyword"] == "원자료시황"
     assert "AI 요약 없음" in data["markdown_report"]
+
+
+def test_legacy_markdown_section_still_parsed(tmp_path, monkeypatch):
+    """구형 ===MARKDOWN=== 출력도 시황 본문으로 인정 (모델이 옛 형식을 낼 때 대비)."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
+키워드
+===MARKDOWN===
+본문
+===END===""")
+    data = _generate(tmp_path, transcript="전사 내용")
+    assert data["title_keyword"] == "키워드"
+    assert data["reports"]["sihwang"] == "본문"
+
+
+def test_report_split_into_sihwang_and_news(tmp_path, monkeypatch):
+    """세션당 2건 — 시황 / 종목기사검색으로 분리되고 '기타'는 접기 블록으로."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
+반도체급등
+===SIHWANG===
+## 📌 요약
+• 나스닥 강세
+===NEWS===
+• **엔비디아**: 급등
+  🔗 [실적 서프라이즈](https://n.news/1)
+---기타---
+• **인텔**: 약세
+===HOLDINGS===
+삼성전자 | O | 언급됨
+===END===""")
+    data = _generate(tmp_path, transcript="")
+    assert data["title_keyword"] == "반도체급등"
+    assert "나스닥 강세" in data["reports"]["sihwang"]
+    assert "엔비디아" in data["reports"]["news"]
+    assert "---기타---" not in data["reports"]["news"]     # 접기 마커로 치환됨
+    assert tg_format.FOLD_OPEN in data["reports"]["news"]
+    assert "인텔" in data["reports"]["news"]
+    # 통합본(옵시디안 단일 파일·하위호환)에는 둘 다 들어간다
+    assert "나스닥 강세" in data["markdown_report"]
+    assert "엔비디아" in data["markdown_report"]
+    assert data["holdings_mentioned"][0]["mentioned"] is True
 
 
 def test_verbatim_caps_very_long_screen(tmp_path, llm_down):

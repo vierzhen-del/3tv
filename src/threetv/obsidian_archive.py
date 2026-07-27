@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from .common import REPO_ROOT, env_token, log, now_kst
 
@@ -18,6 +19,10 @@ VAULT_TMP = REPO_ROOT / ".vault_tmp"
 
 US_MARKER = "<!-- 3tv:us -->"
 KR_MARKER = "<!-- 3tv:kr -->"
+
+# 기사검색 별도 노트(3protv기사_YYYYMMDD.md)의 세션별 섹션 헤더
+US_NEWS_HEAD = "## 🇺🇸 미장 종목 기사"
+KR_NEWS_HEAD = "## 🇰🇷 한국 종목 기사"
 
 
 def _vault_url(vault_repo: str) -> str:
@@ -70,6 +75,31 @@ def _today_file(vault: Path, base_path: str, keyword: str, date: datetime) -> Pa
     return month_dir / f"3protv오늘_{ymd}_{safe_kw or '시황'}.md"
 
 
+def _news_file(vault: Path, base_path: str, date: datetime) -> Path:
+    """기사검색 리포트 파일 경로 — 시황 파일과 분리해 본문이 잠식되지 않게 한다."""
+    month_dir = vault / base_path / date.strftime("%Y") / date.strftime("%m")
+    month_dir.mkdir(parents=True, exist_ok=True)
+    return month_dir / f"{news_note_name(date)}.md"
+
+
+def news_note_name(date: datetime) -> str:
+    return f"3protv기사_{date.strftime('%Y%m%d')}"
+
+
+def obsidian_deeplink(obsidian_cfg: dict, date: datetime | None = None) -> str:
+    """탭S9/S26에서 탭하면 옵시디안이 열리는 딥링크.
+
+    파일명에는 그날 키워드가 붙어 전송 시점엔 확정되지 않으므로(us 세션이 만든
+    파일을 kr이 재사용) **검색 딥링크**를 쓴다 — 날짜만으로 항상 맞는다.
+    """
+    vault = (obsidian_cfg or {}).get("vault_name", "").strip()
+    if not vault:
+        return ""
+    ymd = (date or now_kst()).strftime("%Y%m%d")
+    return (f"obsidian://search?vault={quote(vault)}"
+            f"&query={quote(f'3protv오늘_{ymd}')}")
+
+
 def _frontmatter(date: datetime, keyword: str, indices: list[dict],
                  holdings_mentioned: list[dict]) -> str:
     mentioned = [h["name"] for h in holdings_mentioned if h.get("mentioned")]
@@ -115,8 +145,14 @@ def archive_report(
     markdown_report: str,
     indices: list[dict],
     holdings_mentioned: list[dict],
+    news_markdown: str = "",
 ) -> bool:
-    """리포트를 볼트 repo에 커밋·push. 실패해도 파이프라인은 계속(best-effort)."""
+    """리포트를 볼트 repo에 커밋·push. 실패해도 파이프라인은 계속(best-effort).
+
+    news_markdown(종목 기사검색)은 같은 날짜 폴더의 **별도 파일**
+    `3protv기사_YYYYMMDD.md`로 저장하고, 시황 파일에서 `[[위키링크]]`로 연결한다
+    (기사 목록이 시황 본문을 잠식하지 않게 — 2026-07-27 사용자 요청).
+    """
     vault = _clone_vault(obsidian_cfg)
     if not vault:
         return False
@@ -127,6 +163,21 @@ def archive_report(
         section_title = "## 🇺🇸 미국 시황 (06시 방송)" if session == "us" \
             else "## 🇰🇷 한국 시황 (08시 방송)"
         section = f"\n{marker}\n{section_title}\n\n{markdown_report}\n"
+
+        news_path: Path | None = None
+        if news_markdown.strip():
+            news_path = _news_file(vault, obsidian_cfg["base_path"], date)
+            head = US_NEWS_HEAD if session == "us" else KR_NEWS_HEAD
+            other = KR_NEWS_HEAD if session == "us" else US_NEWS_HEAD
+            prev = news_path.read_text(encoding="utf-8") if news_path.exists() \
+                else f"# {news_note_name(date)}\n"
+            if head in prev:
+                # 같은 세션 재실행 → 내 섹션만 걷어내고 다른 세션 섹션은 보존
+                before, rest = prev.split(head, 1)
+                prev = before + (other + rest.split(other, 1)[1] if other in rest else "")
+            news_path.write_text(
+                f"{prev.rstrip()}\n\n{head}\n\n{news_markdown}\n", encoding="utf-8")
+            section += f"\n📰 종목 기사검색 → [[{news_note_name(date)}]]\n"
 
         if path.exists():
             content = path.read_text(encoding="utf-8")
@@ -148,7 +199,10 @@ def archive_report(
         path.write_text(content, encoding="utf-8")
 
         rel = path.relative_to(vault)
-        subprocess.run(["git", "-C", str(vault), "add", str(rel)],
+        to_add = [str(rel)]
+        if news_path is not None:
+            to_add.append(str(news_path.relative_to(vault)))
+        subprocess.run(["git", "-C", str(vault), "add", *to_add],
                        check=True, capture_output=True)
         commit = subprocess.run(
             ["git", "-C", str(vault),

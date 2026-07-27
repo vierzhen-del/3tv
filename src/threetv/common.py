@@ -99,6 +99,27 @@ def parse_duration(s: str) -> int:
     return h * 3600 + m * 60 + sec
 
 
+def window_offsets(start_kst: str, window: list | None) -> tuple[int, int] | None:
+    """녹화 시작 시각(start_kst) 기준으로 ['HH:MM','HH:MM'] 구간의 (시작초, 길이초).
+
+    구간 전사(kr 07:50~08:05)처럼 영상 안의 일부만 처리할 때 쓴다.
+    구간이 녹화 시작보다 앞서면 0초부터로 잘라내고, 구간이 뒤집혔거나 형식이
+    잘못됐으면 None(=구간 지정 없음)을 돌려준다.
+    """
+    if not window or len(window) != 2:
+        return None
+    try:
+        def mins(hhmm: str) -> int:
+            h, m = (int(x) for x in str(hhmm).split(":")[:2])
+            return h * 60 + m
+        base, a, b = mins(start_kst), mins(window[0]), mins(window[1])
+    except ValueError:
+        return None
+    if b <= a:
+        return None
+    return max(0, (a - base) * 60), (b - max(a, base)) * 60
+
+
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
