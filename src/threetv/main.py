@@ -34,8 +34,8 @@ from .common import (load_env, load_holdings, load_settings, log, now_kst,
 from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
-from .obsidian_archive import (archive_report, obsidian_deeplink,
-                               read_us_section_today)
+from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
+                               obsidian_deeplink, read_us_section_today)
 from .report import (drop_etf_stocks, extract_mentions, generate_report,
                      us_stocks_in_captures)
 from .transcribe import transcribe
@@ -230,8 +230,12 @@ def run(args: argparse.Namespace) -> int:
 
     # kr 세션은 오늘 아침 us 리포트를 컨텍스트로 사용
     us_context = ""
+    us_context_problem = ""
     if session == "kr" and not args.skip_archive:
-        us_context = read_us_section_today(settings["obsidian"])
+        us_context, reason = read_us_section_today(settings["obsidian"])
+        if reason and reason != DISABLED:
+            log.warning("us 컨텍스트 없이 kr 리포트를 만듭니다: %s", reason)
+            us_context_problem = reason
 
     # 6. Claude 최종 리포트
     report = generate_report(
@@ -241,18 +245,36 @@ def run(args: argparse.Namespace) -> int:
         flows=flows,
     )
 
-    # 7. 전송 (텔레그램 → 카카오, best-effort)
+    # 7. 아카이브 (옵시디안 볼트 → 탭S9 n8n → Syncthing → S26)
+    #    전송보다 **먼저** 한다 — 저장이 실패했는데 「옵시디안에서 열기」 딥링크를
+    #    붙여 보내면 눌러도 빈 검색 결과가 뜬다(2026-07-27 실제 증상).
+    reports = report.get("reports") or {"sihwang": report["telegram_text"], "news": ""}
+    if args.skip_archive:
+        archived = ArchiveResult(ok=False, skipped=True, reason=DISABLED)
+    else:
+        archived = archive_report(
+            settings["obsidian"], session, report["title_keyword"],
+            tg_format.to_obsidian(reports.get("sihwang_md")
+                                  or reports.get("sihwang")
+                                  or report["markdown_report"]),
+            indices, report.get("holdings_mentioned", []),
+            news_markdown=tg_format.to_obsidian(reports.get("news", "")),
+        )
+        if archived.ok and settings.get("notion", {}).get("enabled"):
+            from .notion_archive import archive_to_notion
+            archive_to_notion(report["title_keyword"], report["markdown_report"])
+
+    # 8. 전송 (텔레그램 → 카카오, best-effort)
     #    세션당 2건 — ① 시황 ② 종목 기사검색. 한 건에 다 담으면 기사 목록이
     #    본문을 잠식해 읽히지 않았다(2026-07-27 실물 스크린샷 지적).
     base = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']}"
-    reports = report.get("reports") or {"sihwang": report["telegram_text"], "news": ""}
     deeplink = obsidian_deeplink(settings.get("obsidian", {}))
     parts = [
         (f"{base} [{label}]", reports.get("sihwang", "")),
         (f"{base} [{label} · 종목기사]", reports.get("news", "")),
     ]
     messages = [f"**{head}**\n\n{body}" for head, body in parts if body.strip()]
-    if messages and deeplink:
+    if messages and deeplink and archived.ok:
         messages[-1] += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
 
     if args.skip_notify:
@@ -266,22 +288,38 @@ def run(args: argparse.Namespace) -> int:
             # 카카오는 HTML/접기를 지원하지 않으므로 접기 마커만 걷어낸 평문으로
             send_kakao_memo(tg_format.to_plain("\n\n".join(messages)))
 
-    # 8. 아카이브 (옵시디안 볼트 → S26/탭S9 동기화, 노션 선택)
-    if not args.skip_archive:
-        archive_report(
-            settings["obsidian"], session, report["title_keyword"],
-            tg_format.to_obsidian(reports.get("sihwang_md")
-                                  or reports.get("sihwang")
-                                  or report["markdown_report"]),
-            indices, report.get("holdings_mentioned", []),
-            news_markdown=tg_format.to_obsidian(reports.get("news", "")),
-        )
-        if settings.get("notion", {}).get("enabled"):
-            from .notion_archive import archive_to_notion
-            archive_to_notion(report["title_keyword"], report["markdown_report"])
+    # 9. 볼트 저장 실패는 조용히 넘기지 않는다 — 리포트는 이미 나갔지만 옵시디안엔
+    #    아무것도 안 올라간 상태다. 텔레그램 경고 + 종료코드 1로 Actions를 빨갛게 만든다.
+    #    (GH_PAT 만료로 8일간 침묵 실패했던 2026-07-27 사고 재발 방지)
+    if not archived.ok and not archived.skipped:
+        alert = _vault_alert(label, archived.reason, us_context_problem)
+        log.error("볼트 저장 실패: %s", archived.reason)
+        if args.skip_notify:
+            log.error("--skip-notify: 경고 전송 생략 — 내용:\n%s", alert)
+        else:
+            send_alert(alert)
+        return 1
 
     log.info("=== %s 세션 완료 ===", label)
     return 0
+
+
+def _vault_alert(label: str, reason: str, us_context_problem: str = "") -> str:
+    """볼트 저장 실패 경고 — 무엇이 되고 무엇이 안 됐는지부터 알린다."""
+    lines = [
+        f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})",
+        f"사유: {reason}",
+        "",
+        "· 텔레그램/카카오 리포트는 정상 발송됐습니다.",
+        "· 옵시디안(탭S9·S26)에는 오늘 리포트가 올라가지 않습니다.",
+    ]
+    if us_context_problem:
+        lines.append(f"· kr 리포트가 미장 컨텍스트 없이 생성됨: {us_context_problem}")
+    lines += [
+        "",
+        "조치: GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인",
+    ]
+    return "\n".join(lines)
 
 
 def main() -> int:

@@ -29,6 +29,11 @@ on:
         type: boolean
         required: false
         default: false
+      archive:
+        description: "VOD 실행 결과를 볼트(3tv-reports)에 저장 (기본: 저장 안 함 — 유실분 복구용)"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   run:
@@ -79,10 +84,13 @@ jobs:
             python -m threetv.main --session us
             exit $?
           fi
-          # VOD 테스트: 기본은 무발송(--skip-notify), notify=true면 텔레그램/카카오 전송
-          FLAGS="--skip-archive"
+          # VOD 테스트: 기본은 무발송·미저장. 유실분 복구 시에만 notify/archive를 켠다
+          FLAGS=""
           if [ "${{ github.event.inputs.notify }}" != "true" ]; then
             FLAGS="$FLAGS --skip-notify"
+          fi
+          if [ "${{ github.event.inputs.archive }}" != "true" ]; then
+            FLAGS="$FLAGS --skip-archive"
           fi
           if [ -n "$TRIM_START" ]; then
             FLAGS="$FLAGS --trim-start $TRIM_START --trim-duration $TRIM_DURATION"

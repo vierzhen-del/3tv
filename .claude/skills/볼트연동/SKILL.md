@@ -10,12 +10,33 @@ description: 리포트가 옵시디안 볼트까지 도달하는 경로(3tv-repo
 ```
 3tv 파이프라인
   → push → 3tv-reports (private 중계 repo)
-  → n8n 스케줄 (Tab S9, 07:10 / 08:50 KST) 이 fetch
+  → n8n 스케줄 (Tab S9, 07:10 / 08:50 / 09:40 KST) 이 fetch
   → 볼트의 3protv/YYYY/MM/*.md
   → Syncthing 이 S26 옵시디안으로 전파
 ```
 
-push 경로는 **검증 완료**(2026-07-19 05:51 KST "3protv us 리포트" 커밋 실측).
+## 🔴 "옵시디안에 안 보여요" 진단 순서
+
+증상이 나오면 **뒤에서부터가 아니라 앞에서부터** 확인한다. 실제 사고는 거의 항상 첫 구간이었다.
+
+| # | 확인 | 방법 |
+|---|---|---|
+| 1 | `GH_PAT` 이 살아있나 | 3tv Actions → **vault-check** 워크플로 수동 실행. FAIL이면 여기서 끝 — PAT 재발급 |
+| 2 | 리포트가 중계 repo에 올라왔나 | `3tv-reports` 의 `3protv/YYYY/MM/` 에 오늘 날짜 md 2개(`3protv오늘_*`, `3protv기사_*`) |
+| 3 | n8n이 받아갔나 | Tab S9 n8n → 해당 워크플로 Executions 탭 |
+| 4 | Syncthing이 전파했나 | S9 `/storage/emulated/0/Documents/vierzhen_home/3protv/` → S26 |
+
+## ⚠️ GH_PAT 만료는 예전엔 침묵 실패였다 (2026-07-27 사고)
+
+PAT가 만료돼 push가 8일간 끊겼는데 **Actions는 계속 초록불**이었다. `archive_report()` 가
+best-effort라 실패해도 호출부가 반환값을 안 봤고, 텔레그램에는 「옵시디안에서 열기」 딥링크가
+그대로 붙어 나가 눌러도 빈 검색 결과만 떴다. 그래서 다음을 넣었다:
+
+- 볼트 저장 실패 → **텔레그램 경고 + 종료코드 1**(Actions 빨간 X). 딥링크는 성공했을 때만 붙는다
+- `vault-check` 를 **주 1회 스케줄**(월 06:00 KST)로 승격 — 만료를 아침 리포트 유실 전에 잡는다
+- n8n 쪽도 오늘 날짜 md가 0건이면 09:40 슬롯에서 텔레그램 경고
+
+즉 **이제는 조용히 실패하지 않는다.** 경고 없이 "안 보인다"면 볼트/Syncthing 구간(위 표 3~4번)을 먼저 의심할 것.
 
 ## ⚠️ 실제 볼트 폴더명은 `vierzhen_home` (2026-07-20 실측 정정)
 

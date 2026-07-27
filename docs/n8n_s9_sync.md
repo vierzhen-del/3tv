@@ -23,24 +23,41 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 ## 워크플로 등록 (import 방식)
 
 1. n8n 웹 UI → Workflows → **Import from File** → `docs/n8n_3tv_sync_workflow.json` 선택
-2. import 후 수정할 것 2곳:
+2. import 후 수정할 것 4곳:
    - **"오늘 경로 계산" Code 노드**: `OWNER` 상수를 본인 계정(`vierzhen-del`)으로
    - **"파일 목록 조회" HTTP Request 노드**: Header `Authorization` 값의 `<N8N_GITHUB_PAT>`를 위에서 발급한 토큰으로 교체 (또는 n8n Credential로 등록해 연결)
+   - **"md 다운로드" HTTP Request 노드**: 같은 `<N8N_GITHUB_PAT>` 교체
+   - **"텔레그램 경고" HTTP Request 노드**: URL의 `<N8N_TELEGRAM_BOT_TOKEN>` 과 JSON body의 `<N8N_TELEGRAM_CHAT_ID>` 를 3tv가 쓰는 봇 토큰·chat id로 교체
 3. 워크플로 Settings → **Timezone: Asia/Seoul** 확인
 4. 활성화(Active 토글)
 
-동작: 평일 **07:10**(us 리포트)과 **08:50**(kr 병합본) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
+동작: 평일 **07:10**(us 리포트) · **08:50**(kr 병합본) · **09:40**(재시도) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
+
+> ⚠️ **이미 예전 버전을 import 해뒀다면 다시 import 해야 합니다.** n8n은 JSON 파일과 연결돼 있지 않고 import 시점의 사본을 들고 있습니다. 기존 워크플로를 열어 전체 선택 후 삭제하고 붙여넣거나, 새로 import한 뒤 옛 워크플로를 비활성화하세요 (둘 다 Active면 같은 파일을 두 번 씁니다).
+
+### 09:40 재시도 슬롯이 있는 이유
+
+GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KST에 끝나 08:50 fetch까지 마진이 46분뿐이었습니다. 지연이 조금만 더 커지면 그날 병합본을 놓치는데, 다음날 실행은 "오늘 날짜"만 보므로 **영구 누락**이 됩니다. 09:40 슬롯이 이 구멍을 막습니다. 이미 받은 파일은 같은 내용으로 덮어쓰므로 중복 실행은 무해합니다.
+
+### 누락 경고
+
+`3protv/YYYY/MM/`에 오늘 날짜 md가 하나도 없으면 **"누락?" IF 노드**가 텔레그램 경고를 보냅니다.
+
+- **09:40 슬롯에서만** 보냅니다 — 07:10 시점엔 kr 병합본이 아직 없는 게 정상이라, 그때 경고하면 매일 오탐이 납니다. 판단은 "오늘 경로 계산" 노드가 내려주는 `hour` 값으로 합니다.
+- `3protv/2026/07` 폴더 자체가 없으면 GitHub API가 **404**를 주는데, "파일 목록 조회" 노드의 `neverError` 옵션이 이를 정상 응답으로 받아 넘겨 흐름이 끊기지 않게 합니다. (2026-07-27 사고 당시엔 이 404에서 워크플로가 조용히 멈췄습니다.)
 
 ## 수동 구성 시 노드 구조 (import가 안 될 때)
 
 | # | 노드 | 설정 |
 |---|------|------|
-| 1 | Schedule Trigger | Cron: `10 7 * * 1-5` 와 `50 8 * * 1-5` (KST) |
+| 1 | Schedule Trigger | Cron: `10 7 * * 1-5`, `50 8 * * 1-5`, `40 9 * * 1-5` (KST) |
 | 2 | Code (오늘 경로 계산) | 아래 스니펫 |
-| 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json` |
-| 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출 |
-| 5 | HTTP Request (다운로드) | GET `{{download_url}}`, Header 동일, Response: **File** |
-| 6 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/3protv/{yyyy}/{mm}/{name}` |
+| 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, Options → Response → **Never Error** 켜기 |
+| 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출. 0건이고 `hour >= 9` 면 `{missing:true, text}` 1건 반환 |
+| 5 | IF (누락?) | 조건: `{{ $json.missing }}` is true → 출력 0(참)=경고, 출력 1(거짓)=다운로드 |
+| 6 | HTTP Request (텔레그램 경고) | POST `https://api.telegram.org/bot<TOKEN>/sendMessage`, JSON body `{chat_id, text}` |
+| 7 | HTTP Request (다운로드) | GET `{{download_url}}`, Header 동일, Response: **File** |
+| 8 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/3protv/{yyyy}/{mm}/{name}` |
 
 2번 Code 노드 스니펫:
 ```javascript
@@ -48,7 +65,8 @@ const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}
 const yyyy = String(now.getFullYear());
 const mm = String(now.getMonth() + 1).padStart(2, "0");
 const ymd = yyyy + mm + String(now.getDate()).padStart(2, "0");
-return [{ json: { yyyy, mm, ymd } }];
+const hour = now.getHours();   // 09:40 슬롯에서만 누락 경고를 보내기 위한 값
+return [{ json: { yyyy, mm, ymd, hour } }];
 ```
 
 ## write 충돌 규칙 (Syncthing)
@@ -61,4 +79,9 @@ return [{ json: { yyyy, mm, ymd } }];
 
 1. n8n에서 워크플로 **Execute Workflow**로 수동 1회 실행 → `/root/obsidian/3protv/` 아래 md 생성 확인
 2. S9 옵시디안(또는 파일탐색기)에서 `/storage/emulated/0/Documents/vierzhen_home/3protv/` 확인
-3. 1분 내 S26 옵시디안에 같은 파일 나타나는지 확인
+3. **파일이 2개 내려왔는지** — `3protv오늘_YYYYMMDD_*.md`(시황)와 `3protv기사_YYYYMMDD.md`(종목 기사).
+   시황 노트가 기사 노트를 `[[위키링크]]`로 참조하므로 **둘이 같이** 있어야 링크가 깨지지 않습니다
+   (2026-07-27 리포트 2분할로 생긴 신규 구조)
+4. 1분 내 S26 옵시디안에 같은 파일 나타나는지 확인
+
+수동 실행인데 아무 파일도 안 내려온다면 **볼트가 아니라 그 앞 구간**이 문제입니다 — `3tv-reports` 저장소에 오늘 날짜 md가 실제로 올라왔는지부터 확인하세요. 없다면 3tv Actions의 `vault-check` 워크플로를 수동 실행해 `GH_PAT` 부터 점검합니다.

@@ -1,9 +1,14 @@
 # GH_PAT로 옵시디안 볼트(3tv-reports) push가 되는지만 빠르게 확인 (수동 실행 전용).
 # 캡처·Gemini 비전·LLM 리포트를 전혀 돌리지 않으므로 무료 티어 할당량을 쓰지 않는다.
 # GH_PAT 재발급 직후 확인용 — 매번 _healthcheck/latest.md 한 파일만 덮어써 커밋한다.
+#
+# 주 1회 스케줄로도 돈다: PAT 만료를 아침 리포트가 유실된 **뒤에** 알게 되는 걸 막으려는
+# 조기경보다(2026-07-27 사고 — 만료를 8일간 몰랐다). 캡처·LLM을 안 쓰므로 실행 비용 0.
 name: vault-check
 
 on:
+  schedule:
+    - cron: "0 21 * * 0"      # 일 21:00 UTC = 월 06:00 KST — 그 주 첫 us 세션 직전
   workflow_dispatch: {}
 
 jobs:
@@ -17,10 +22,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install PyYAML python-dotenv
+      # requests: 실패 시 텔레그램 경고 전송에 필요
+      - run: pip install requests PyYAML python-dotenv
 
       - name: Check vault push
         env:
           PYTHONPATH: src
           GH_PAT: ${{ secrets.GH_PAT }}
-        run: python scripts/check_vault_push.py
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        # 경고는 스케줄 실행에서만 — 수동 진단 때 텔레그램이 울리지 않게
+        run: |
+          ALERT=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then ALERT="--alert"; fi
+          python scripts/check_vault_push.py $ALERT
