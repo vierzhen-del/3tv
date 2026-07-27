@@ -1,0 +1,26 @@
+# GH_PAT로 옵시디안 볼트(3tv-reports) push가 되는지만 빠르게 확인 (수동 실행 전용).
+# 캡처·Gemini 비전·LLM 리포트를 전혀 돌리지 않으므로 무료 티어 할당량을 쓰지 않는다.
+# GH_PAT 재발급 직후 확인용 — 매번 _healthcheck/latest.md 한 파일만 덮어써 커밋한다.
+name: vault-check
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install PyYAML python-dotenv
+
+      - name: Check vault push
+        env:
+          PYTHONPATH: src
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python scripts/check_vault_push.py
