@@ -421,6 +421,7 @@ _PDF_NAME_COLS = ("종목명", "구성종목명")
 _PDF_QTY_COLS = ("계약수", "주식수", "수량", "보유수량")
 _PDF_WEIGHT_COLS = ("비중", "구성비중")
 _PDF_AMOUNT_COLS = ("금액", "평가금액", "구성금액")
+_PDF_MKTCAP_COLS = ("시가총액",)
 
 
 def _pick_col(df, candidates: tuple[str, ...]) -> str | None:
@@ -455,6 +456,7 @@ def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
     qty_col = _pick_col(df, _PDF_QTY_COLS)
     w_col = _pick_col(df, _PDF_WEIGHT_COLS)
     amt_col = _pick_col(df, _PDF_AMOUNT_COLS)
+    cap_col = _pick_col(df, _PDF_MKTCAP_COLS)
     if qty_col is None and w_col is None:
         log.warning("ETF PDF 컬럼 확인 실패 %s: %s", ticker, list(df.columns)[:8])
         return []
@@ -470,19 +472,27 @@ def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
             "name": name or code,
             "qty": _num(r[qty_col]) if qty_col else None,
             "amount": _num(r[amt_col]) if amt_col else None,
+            "mktcap": _num(r[cap_col]) if cap_col else None,
             "weight": _num(r[w_col]) if w_col else None,
         })
 
-    # KRX는 **해외 상장 구성종목의 '비중' 컬럼을 0으로 준다** (2026-07-28 실측:
-    # 426030·0015B0의 미국 주식은 전부 0.00, 국내주식만 담는 441800은 정상).
-    # 금액은 정상적으로 주므로 금액 기준으로 직접 환산한다 — 안 하면 해외형 ETF
-    # 리포트의 비중이 전부 0.00%로 나가 쓸모가 없다.
+    # KRX는 **해외 상장 구성종목의 '비중'을 0으로 준다** (2026-07-28 실측:
+    # 426030·0015B0·0223R0의 미국 주식은 전부 0.00, 국내주식만 담는 441800은 정상).
+    # 금액이나 시가총액이 있으면 거기서 환산하고, 그것마저 없으면 **비중을 None으로
+    # 비운다** — 0.00%를 그대로 찍으면 "비중이 0인 종목"이라는 없는 사실을 알리게 된다.
     if sum(r["weight"] or 0 for r in rows) < 1:
-        total = sum(r["amount"] or 0 for r in rows)
-        if total > 0:
+        base = next((k for k in ("amount", "mktcap")
+                     if sum(r.get(k) or 0 for r in rows) > 0), None)
+        if base:
+            total = sum(r.get(base) or 0 for r in rows)
             for r in rows:
-                r["weight"] = (r["amount"] or 0) / total * 100
-            log.info("ETF PDF %s: 비중 미공시 → 금액 기준으로 환산", ticker)
+                r["weight"] = (r.get(base) or 0) / total * 100
+            log.info("ETF PDF %s: 비중 미공시 → %s 기준으로 환산", ticker, base)
+        else:
+            for r in rows:
+                r["weight"] = None
+            log.warning("ETF PDF %s: 비중·금액·시가총액이 모두 비어 있어 비중을 표시하지 "
+                        "않습니다 (샘플: %s)", ticker, rows[0] if rows else "-")
 
     log.info("ETF PDF %s %s: %d종목 (컬럼 %s)", ticker, date_ymd, len(rows),
              list(df.columns)[:6])
@@ -575,8 +585,12 @@ def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5,
                                      "dw": dw, "weight": t["weight"]})
 
     # 표시 순서는 수량이 아니라 **비중 규모**로 — 100주짜리 소형주보다 1주 움직인
-    # 대형주가 포트폴리오에 더 큰 영향이다
-    qty_moves.sort(key=lambda r: (r.get("weight") or 0), reverse=True)
+    # 대형주가 포트폴리오에 더 큰 영향이다. 비중을 못 구한 ETF(해외형 일부)는
+    # 차선책으로 상대 변화폭이 큰 순서로 보여준다.
+    if any(m.get("weight") is not None for m in qty_moves):
+        qty_moves.sort(key=lambda r: (r.get("weight") or 0), reverse=True)
+    else:
+        qty_moves.sort(key=lambda r: abs(r["rel"]), reverse=True)
     weight_moves.sort(key=lambda r: r["dw"], reverse=True)
     buys = [m for m in qty_moves if m["dq"] > 0][:top]
     sells = [m for m in qty_moves if m["dq"] < 0][:top]

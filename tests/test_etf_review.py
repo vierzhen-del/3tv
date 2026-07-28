@@ -187,3 +187,39 @@ def test_review_flags_basket_rescale_in_text():
                     "prev_date": "20260727"}])
     assert "설정단위" in out["markdown_report"]
     assert "개별 매매 아님" in out["markdown_report"]
+
+
+def test_weight_blank_when_krx_gives_nothing(monkeypatch):
+    """비중·금액·시가총액이 전부 0이면 0.00%를 찍지 말고 비워야 한다 —
+    '비중이 0인 종목'이라는 없는 사실을 알리게 되기 때문(0223R0 실측)."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["ALPHABET INC-CL A", "AMAZON.COM INC"],
+         "계약수": [3.0, 2.0], "금액": [0, 0], "시가총액": [0, 0], "비중": [0.0, 0.0]},
+        index=["GOOGL", "AMZN"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("0223R0", "20260728")
+    assert all(r["weight"] is None for r in rows)
+
+
+def test_review_omits_weight_when_unavailable():
+    prev = [{"code": "A", "name": "ALPHABET", "qty": 3.0, "amount": None,
+             "mktcap": None, "weight": None},
+            {"code": "B", "name": "AMAZON", "qty": 2.0, "amount": None,
+             "mktcap": None, "weight": None},
+            {"code": "C", "name": "MSFT", "qty": 5.0, "amount": None,
+             "mktcap": None, "weight": None}]
+    today = [dict(prev[0], qty=4.0), dict(prev[1]), dict(prev[2])]
+    d = market.etf_pdf_diff(today, prev)
+    out = report_mod.generate_etf_review(
+        SETTINGS, [{"name": "TIGER 미국테크NYSE100액티브", "ticker": "0223R0",
+                    "diff": d, "prev_date": "20260727"}])
+    md = out["markdown_report"]
+    assert "ALPHABET +1주" in md
+    assert "비중 0.00%" not in md      # 없는 값을 0으로 찍으면 안 된다
