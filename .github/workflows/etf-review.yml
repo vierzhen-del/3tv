@@ -17,6 +17,10 @@ on:
         description: "false면 볼트 저장 생략 (기본 저장)"
         required: false
         default: "true"
+      probe_flows:
+        description: "true면 수급·ETF명 진단 출력 (리포트 발송과 무관)"
+        required: false
+        default: ""
 
 jobs:
   run:
@@ -52,6 +56,32 @@ jobs:
             FLAGS="$FLAGS --skip-archive"
           fi
           python -m threetv.main $FLAGS
+
+      # 수급이 하루치로 나오는지(10일 누적 버그 재발 방지) + ETF 종목명이 코드로
+      # 남지 않는지 실제 KRX로 확인한다. 발송 경로와 무관한 순수 진단.
+      - name: Probe flows / ETF names (debug)
+        if: github.event.inputs.probe_flows == 'true'
+        env:
+          PYTHONPATH: src
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: |
+          python - <<'PY'
+          from threetv import market
+          print("최근 영업일:", market.last_biz_days(2))
+          m = market._etf_name_map()
+          print("ETF 종목명 맵:", len(m), "건")
+          mv = market.kr_etf_top_movers(n=5)
+          for side in ("up", "down"):
+              print(f"-- ETF {side}")
+              for r in mv.get(side) or []:
+                  flag = "CODE!" if r["name"] == r["ticker"] else "ok"
+                  print(f"   [{flag}] {r['ticker']} {r['name']} {r['pct']:+.2f}%")
+          s = market.kr_flow_summary()
+          print("-- 수급 요약", s.get("date"), "vs", s.get("prev_date"))
+          for r in s.get("main") or []:
+              print(f"   {r['investor']}: {r['net']:+,.0f} (전일比 {r['delta']})")
+          PY
 
       - name: Print report (debug)
         if: always()
