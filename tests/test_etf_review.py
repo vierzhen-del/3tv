@@ -223,3 +223,46 @@ def test_review_omits_weight_when_unavailable():
     md = out["markdown_report"]
     assert "ALPHABET +1주" in md
     assert "비중 0.00%" not in md      # 없는 값을 0으로 찍으면 안 된다
+
+
+def test_cash_row_does_not_zero_out_every_stock(monkeypatch):
+    """PDF에 섞인 원화예금 행이 총액을 독차지하면 개별 종목이 전부 0.00%로
+    환산된다(0223R0 실측). 과반 행에 값이 없으면 환산하지 말고 비워야 한다."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["ALPHABET", "AMAZON", "MICROSOFT", "원화예금"],
+         "계약수": [3.0, 2.0, 1.0, 1.0],
+         "금액": [0, 0, 0, 5_000_000],       # 주식은 0, 예금만 값이 있다
+         "시가총액": [0, 0, 0, 0],
+         "비중": [0.0, 0.0, 0.0, 0.0]},
+        index=["GOOGL", "AMZN", "MSFT", "KRW"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("0223R0", "20260728")
+    assert all(r["weight"] is None for r in rows)
+
+
+def test_weight_still_derived_when_most_rows_have_amounts(monkeypatch):
+    """과반이 정상 금액이면 (예금 행이 하나 섞여 있어도) 환산은 계속 동작한다."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["A", "B", "C", "원화예금"],
+         "계약수": [1.0, 1.0, 1.0, 1.0],
+         "금액": [300, 300, 300, 100],
+         "시가총액": [0, 0, 0, 0],
+         "비중": [0.0, 0.0, 0.0, 0.0]},
+        index=["A", "B", "C", "KRW"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("441800", "20260728")
+    assert [round(r["weight"], 0) for r in rows] == [30.0, 30.0, 30.0, 10.0]

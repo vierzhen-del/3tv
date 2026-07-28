@@ -481,8 +481,13 @@ def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
     # 금액이나 시가총액이 있으면 거기서 환산하고, 그것마저 없으면 **비중을 None으로
     # 비운다** — 0.00%를 그대로 찍으면 "비중이 0인 종목"이라는 없는 사실을 알리게 된다.
     if sum(r["weight"] or 0 for r in rows) < 1:
+        # ⚠️ 총액이 0보다 크다는 것만으론 부족하다. PDF에는 원화예금 행이 섞여 있고
+        # 해외 주식 행은 금액이 0이라, 예금 한 줄이 총액을 독차지해 개별 종목이 전부
+        # 0.00%로 환산된다(2026-07-28 0223R0 실측). **과반 행이 실제 값을 가질 때만**
+        # 환산하고, 아니면 비중을 비운다.
+        half = max(1, len(rows) // 2)
         base = next((k for k in ("amount", "mktcap")
-                     if sum(r.get(k) or 0 for r in rows) > 0), None)
+                     if sum(1 for r in rows if (r.get(k) or 0) > 0) >= half), None)
         if base:
             total = sum(r.get(base) or 0 for r in rows)
             for r in rows:
@@ -491,8 +496,8 @@ def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
         else:
             for r in rows:
                 r["weight"] = None
-            log.warning("ETF PDF %s: 비중·금액·시가총액이 모두 비어 있어 비중을 표시하지 "
-                        "않습니다 (샘플: %s)", ticker, rows[0] if rows else "-")
+            log.warning("ETF PDF %s: 비중·금액·시가총액이 대부분 비어 있어 비중을 "
+                        "표시하지 않습니다 (샘플: %s)", ticker, rows[0] if rows else "-")
 
     log.info("ETF PDF %s %s: %d종목 (컬럼 %s)", ticker, date_ymd, len(rows),
              list(df.columns)[:6])
