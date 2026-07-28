@@ -1,0 +1,74 @@
+# ETF 포트폴리오 리뷰: KRX 공시 납입자산구성내역(PDF)의 전일 대비 구성 변화.
+# 방송 캡처와 무관한 순수 데이터 리포트라 kr-session(37분)에 얹지 않고 독립 실행한다 —
+# kr이 캡처 단계에서 실패해도 이 리포트는 정상 발행된다. LLM 미사용(Gemini 0건).
+# cron은 KST 09:30 = UTC 00:30 월~금 (장 개장 후 PDF 공시가 확정된 시점).
+name: etf-review
+
+on:
+  schedule:
+    - cron: "30 0 * * 1-5"    # KST 09:30
+  workflow_dispatch:
+    inputs:
+      notify:
+        description: "false면 텔레그램/카카오 전송 생략 (기본 전송)"
+        required: false
+        default: "true"
+      archive:
+        description: "false면 볼트 저장 생략 (기본 저장)"
+        required: false
+        default: "true"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15      # KRX 조회 4종뿐 — 캡처·비전·전사 없음
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline (etf review)
+        env:
+          PYTHONPATH: src
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: |
+          FLAGS="--session etf"
+          if [ "${{ github.event.inputs.notify }}" = "false" ]; then
+            FLAGS="$FLAGS --skip-notify"
+          fi
+          if [ "${{ github.event.inputs.archive }}" = "false" ]; then
+            FLAGS="$FLAGS --skip-archive"
+          fi
+          python -m threetv.main $FLAGS
+
+      - name: Print report (debug)
+        if: always()
+        run: |
+          for f in $(find output -name report.md 2>/dev/null); do
+            echo "===== $f ====="
+            head -c 6000 "$f"
+            echo
+          done
+
+      - name: Upload analysis artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etf-review-${{ github.run_id }}
+          path: |
+            output/**/report.json
+            output/**/report.md
+          if-no-files-found: ignore
+          retention-days: 7

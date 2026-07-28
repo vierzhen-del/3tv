@@ -40,7 +40,8 @@ from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
                                archive_simple_report, obsidian_deeplink,
                                read_night_slots, read_us_section_today,
                                save_night_slot)
-from .report import (drop_etf_stocks, extract_mentions, generate_night_digest,
+from .report import (drop_etf_stocks, extract_mentions, generate_etf_review,
+                     generate_night_digest,
                      generate_noon_report, generate_report,
                      us_stocks_in_captures)
 from .transcribe import transcribe
@@ -49,7 +50,8 @@ from .vision import analyze_frames
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="삼프로TV 라이브 분석 → 데일리 시황 리포트")
-    p.add_argument("--session", required=True, choices=["us", "kr", "noon", "night"])
+    p.add_argument("--session", required=True,
+                   choices=["us", "kr", "noon", "night", "etf"])
     p.add_argument("--vod-url", help="라이브 대신 VOD URL로 실행 (테스트/복구)")
     p.add_argument("--video-file", help="이미 받은 영상 파일로 실행 (캡처 생략)")
     p.add_argument("--trim-start", metavar="MM:SS",
@@ -345,6 +347,86 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
     return 0
 
 
+def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
+    """ETF 포트폴리오 리뷰 — KRX 공시 PDF의 전일 대비 구성 변화를 1건 발송.
+
+    방송과 무관한 순수 데이터 리포트라 캡처·비전·전사·LLM을 전부 타지 않는다
+    (Gemini 요청 0건). 그래서 kr 세션에 얹지 않고 독립 실행한다 — kr이 캡처
+    단계에서 실패해도 이 리포트는 정상 발행된다.
+    """
+    cfg = settings.get("etf_review") or {}
+    targets = cfg.get("targets") or []
+    if not targets:
+        log.error("etf_review.targets가 비어 있습니다 — 설정을 확인하세요")
+        return 1
+    log.info("=== 3tv ETF 포트폴리오 리뷰 시작 (%s) ===",
+             now_kst().strftime("%Y-%m-%d %H:%M"))
+
+    today_ymd = now_kst().strftime("%Y%m%d")
+    results, failed = [], []
+    for t in targets:
+        ticker, name = str(t["ticker"]), t.get("name") or str(t["ticker"])
+        today, prev, prev_date = market.etf_pdf_with_prev(ticker, today_ymd)
+        if not today:
+            log.warning("ETF PDF 조회 실패(건너뜀): %s %s", name, ticker)
+            failed.append(name)
+            continue
+        if not prev:
+            log.warning("직전 영업일 PDF 없음 — 비교 생략: %s", name)
+            failed.append(f"{name}(비교불가)")
+            continue
+        results.append({"name": name, "ticker": ticker, "prev_date": prev_date,
+                        "diff": market.etf_pdf_diff(today, prev,
+                                                    top=int(cfg.get("top", 5)))})
+
+    if not results:
+        log.error("ETF PDF를 하나도 읽지 못했습니다 (KRX 공시 지연 또는 pykrx 실패)")
+        if not args.skip_notify:
+            send_alert(f"⚠️ 3tv ETF 리뷰 실패 ({now_kst():%m/%d %H:%M})\n"
+                       f"KRX PDF 조회 0건 — 대상: {', '.join(failed) or '없음'}")
+        return 1
+
+    report = generate_etf_review(settings, results)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "report.md").write_text(report["markdown_report"], encoding="utf-8")
+    (out_dir / "report.json").write_text(
+        json.dumps({**report, "results": results}, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+
+    body = report["telegram_text"]
+    if failed:
+        body += f"\n\n⚠️ 조회 실패: {', '.join(failed)}"
+
+    if args.skip_archive:
+        archived = ArchiveResult(ok=False, skipped=True, reason=DISABLED)
+    else:
+        archived = archive_simple_report(
+            settings["obsidian"], "3protvETF", report["title_keyword"],
+            tg_format.to_obsidian(report["markdown_report"]))
+    deeplink = obsidian_deeplink(settings.get("obsidian", {}), file_prefix="3protvETF")
+    if deeplink and archived.ok:
+        body += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
+
+    if args.skip_notify:
+        log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
+    else:
+        # 본문을 이미 HTML 태그로 만들어 뒀으므로 마크다운 변환 없이 그대로 보낸다
+        send_telegram(tg_format.to_telegram_html(body),
+                      settings["telegram"]["max_message_len"], html=True)
+        if settings.get("kakao", {}).get("enabled", True):
+            send_kakao_memo(tg_format.to_plain(body))
+
+    if not archived.ok and not archived.skipped:
+        log.error("볼트 저장 실패: %s", archived.reason)
+        if not args.skip_notify:
+            send_alert(f"⚠️ 3tv ETF 리뷰 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n"
+                       f"사유: {archived.reason}\n· 텔레그램/카카오는 정상 발송됐습니다.")
+        return 1
+
+    log.info("=== ETF 포트폴리오 리뷰 완료 (%d종) ===", len(results))
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     settings = load_settings()
     session = args.session
@@ -359,6 +441,8 @@ def run(args: argparse.Namespace) -> int:
         if args.digest:
             return run_night_digest(args, settings, out_dir)
         return run_night_slot(args, settings, out_dir)
+    if session == "etf":
+        return run_etf_review(args, settings, out_dir)
 
     label = settings["sessions"][session]["label"]
     log.info("=== 3tv %s 세션 시작 (%s) ===", label, now_kst().strftime("%Y-%m-%d %H:%M"))

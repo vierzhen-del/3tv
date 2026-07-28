@@ -1311,3 +1311,92 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
     (out_dir / "report.md").write_text(data["markdown_report"], encoding="utf-8")
     log.info("리포트 생성 완료: 키워드=%s", data["title_keyword"])
     return data
+
+
+# ─────────────────── ETF 포트폴리오 리뷰 (KRX PDF 기반) ───────────────────
+
+
+def _fmt_qty(v: float) -> str:
+    """수량 증감을 부호 포함해 읽기 쉽게 (소수 계약수도 있어 정수면 정수로)."""
+    sign = "+" if v > 0 else "−"
+    a = abs(v)
+    return f"{sign}{a:,.0f}" if a >= 1 or a == 0 else f"{sign}{a:,.2f}"
+
+
+def _fmt_pp(v: float | None) -> str:
+    """비중 변화(%p). None이면 빈 문자열."""
+    if v is None:
+        return ""
+    return f"{'+' if v > 0 else '−'}{abs(v):.2f}%p"
+
+
+def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
+    """ETF 1종의 전일 대비 구성 변화 블록.
+
+    수량(실매매)을 본문에, 비중 변화는 괄호로 덧붙인다 — 비중만 크게 움직이고
+    수량이 그대로면 그건 매매가 아니라 주가효과라 오해를 부른다.
+    """
+    lines = [f"■ <b>{name}</b> ({ticker})"]
+    head = f"구성 {diff['count_today']}종목"
+    if prev_date:
+        head += f" · {prev_date[4:6]}/{prev_date[6:8]} 대비"
+    if diff.get("has_qty"):
+        head += f" · 순매수 {diff['n_buys']} / 순매도 {diff['n_sells']}"
+    lines.append(head)
+
+    if diff["added"]:
+        items = ", ".join(
+            f"{r['name']}" + (f" ({r['weight']:.2f}%)" if r.get("weight") is not None else "")
+            for r in diff["added"])
+        lines.append(f"🆕 신규편입: {items}")
+    if diff["removed"]:
+        items = ", ".join(r["name"] for r in diff["removed"])
+        lines.append(f"🚪 편출: {items}")
+
+    if diff.get("has_qty"):
+        if diff["buys"]:
+            lines.append("📈 매수(수량↑)")
+            for m in diff["buys"]:
+                dw = _fmt_pp(m.get("dw"))
+                tail = f" · 비중 {m['weight']:.2f}%" if m.get("weight") is not None else ""
+                tail += f" ({dw})" if dw else ""
+                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{tail}")
+        if diff["sells"]:
+            lines.append("📉 매도(수량↓)")
+            for m in diff["sells"]:
+                dw = _fmt_pp(m.get("dw"))
+                tail = f" · 비중 {m['weight']:.2f}%" if m.get("weight") is not None else ""
+                tail += f" ({dw})" if dw else ""
+                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{tail}")
+        if not diff["buys"] and not diff["sells"] and not diff["added"] and not diff["removed"]:
+            lines.append("· 전일 대비 수량 변동 없음")
+    else:
+        # 수량 컬럼이 없으면 비중으로 대체하되, 주가효과가 섞였음을 명시한다
+        if diff["weight_up"]:
+            items = ", ".join(f"{m['name']} {_fmt_pp(m['dw'])}" for m in diff["weight_up"])
+            lines.append(f"📈 비중 확대: {items}")
+        if diff["weight_down"]:
+            items = ", ".join(f"{m['name']} {_fmt_pp(m['dw'])}" for m in diff["weight_down"])
+            lines.append(f"📉 비중 축소: {items}")
+        if diff["weight_up"] or diff["weight_down"]:
+            lines.append("  <i>(수량 미공시 — 주가 등락에 의한 변동이 섞여 있습니다)</i>")
+
+    return "\n".join(lines)
+
+
+def generate_etf_review(settings: dict, results: list[dict]) -> dict:
+    """ETF 포트폴리오 리뷰 — KRX 공시 PDF의 전일 대비 구성 변화.
+
+    LLM을 쓰지 않는다. 수량·비중 차이는 순수 계산이라 요약이 필요 없고, Gemini
+    무료 할당량(하루 20건)을 여기에 쓰면 정작 방송 리포트가 밀린다.
+
+    results: [{"name", "ticker", "diff", "prev_date"}] — 조회 실패분은 호출부가 뺀다.
+    """
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+    blocks = [_etf_block(r["name"], r["ticker"], r["diff"], r.get("prev_date", ""))
+              for r in results]
+    body = "\n\n".join(blocks) or "(조회된 ETF가 없습니다)"
+    note = ("ℹ️ KRX 공시 납입자산구성내역(PDF) 기준. 비중은 주가 등락으로도 변하므로 "
+            "실제 운용 매매는 <b>수량 변화</b>로 판정합니다.")
+    md = f"📦 <b>ETF 포트폴리오 리뷰</b> ({today})\n\n{body}\n\n{note}\n\n{settings['report']['disclaimer']}"
+    return {"title_keyword": "ETF구성변화", "telegram_text": md, "markdown_report": md}

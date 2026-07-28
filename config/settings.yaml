@@ -213,3 +213,19 @@ flows:
   enabled: true
   investor: "외국인"        # 순매수 top10 기준 주체 (개인/기관합계 등으로 변경 가능)
   top_n: 10
+
+# ETF 포트폴리오 리뷰 (`--session etf`) — KRX 공시 납입자산구성내역(PDF)의
+# 전일 대비 구성 변화를 별도 메시지 1건으로 발송한다. 운용사 홈페이지를 긁지 않고
+# 공식 공시를 pykrx로 받으므로 홈페이지 개편에 안 깨진다.
+# ⚠️ 액티브 ETF만 의미가 있다 — 패시브는 지수를 따라가므로 구성 변화가 곧 지수 변경이다.
+etf_review:
+  top: 5                    # 매수/매도·편입/편출 각각 상위 몇 개까지 표시할지
+  targets:
+    - ticker: "426030"
+      name: "TIME 미국나스닥100액티브"
+    - ticker: "0015B0"
+      name: "KOACT 미국나스닥성장기업액티브"
+    - ticker: "441800"
+      name: "TIME korea플러스배당액티브"
+    - ticker: "472150"
+      name: "TIGER 배당커버드콜액티브"

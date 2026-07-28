@@ -408,6 +408,164 @@ def kr_etf_top_movers(n: int = 10) -> dict:
         return {}
 
 
+# ─────────────────── ETF 납입자산구성내역(PDF) ───────────────────
+#
+# 국내 ETF는 구성종목·수량을 매 영업일 KRX에 의무 공시한다(PDF = Portfolio
+# Deposit File). 운용사 홈페이지를 긁을 필요 없이 pykrx로 공식 데이터를 받는다.
+#
+# ⚠️ 컬럼명은 KRX 개편 때 바뀔 수 있어 후보 목록에서 찾는다 — 못 찾으면 경고만
+# 남기고 빈 목록을 돌려줘 리포트 전체가 죽지 않게 한다(기존 수급 함수와 같은 방침).
+
+_PDF_NAME_COLS = ("종목명", "구성종목명")
+_PDF_QTY_COLS = ("계약수", "주식수", "수량", "보유수량")
+_PDF_WEIGHT_COLS = ("비중", "구성비중")
+_PDF_AMOUNT_COLS = ("금액", "평가금액", "구성금액")
+
+
+def _pick_col(df, candidates: tuple[str, ...]) -> str | None:
+    return next((c for c in candidates if c in df.columns), None)
+
+
+def _num(v) -> float | None:
+    try:
+        f = float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
+    """ETF 납입자산구성내역 1일분 → [{code, name, qty, amount, weight}].
+
+    비어 있으면 그날은 휴장이거나 아직 공시 전이다(둘 다 정상 상황).
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return []
+    try:
+        df = stock.get_etf_portfolio_deposit_file(ticker, date_ymd)
+    except Exception as e:
+        log.warning("ETF PDF 조회 실패 %s %s: %s", ticker, date_ymd, e)
+        return []
+    if df is None or not len(df):
+        return []
+
+    name_col = _pick_col(df, _PDF_NAME_COLS)
+    qty_col = _pick_col(df, _PDF_QTY_COLS)
+    w_col = _pick_col(df, _PDF_WEIGHT_COLS)
+    amt_col = _pick_col(df, _PDF_AMOUNT_COLS)
+    if qty_col is None and w_col is None:
+        log.warning("ETF PDF 컬럼 확인 실패 %s: %s", ticker, list(df.columns)[:8])
+        return []
+
+    rows = []
+    for idx, r in df.iterrows():
+        code = str(idx).strip()
+        name = str(r[name_col]).strip() if name_col else code
+        if not code or code.lower() == "nan":
+            continue
+        rows.append({
+            "code": code,
+            "name": name or code,
+            "qty": _num(r[qty_col]) if qty_col else None,
+            "amount": _num(r[amt_col]) if amt_col else None,
+            "weight": _num(r[w_col]) if w_col else None,
+        })
+    log.info("ETF PDF %s %s: %d종목 (컬럼 %s)", ticker, date_ymd, len(rows),
+             list(df.columns)[:6])
+    return rows
+
+
+def etf_pdf_with_prev(ticker: str, date_ymd: str, max_back: int = 7
+                      ) -> tuple[list[dict], list[dict], str]:
+    """오늘 PDF + 직전 영업일 PDF → (today, prev, prev_date).
+
+    직전 영업일은 달력이 아니라 **실제 공시가 있는 날**로 되짚는다(휴장·연휴 대응).
+    오늘 것이 아직 없으면 today도 하루씩 되짚어 가장 최근 공시일을 오늘로 삼는다.
+    """
+    base = datetime.strptime(date_ymd, "%Y%m%d")
+    today: list[dict] = []
+    today_date = date_ymd
+    for back in range(max_back):
+        d = (base - timedelta(days=back)).strftime("%Y%m%d")
+        rows = etf_pdf(ticker, d)
+        if rows:
+            today, today_date = rows, d
+            break
+    if not today:
+        return [], [], ""
+
+    tbase = datetime.strptime(today_date, "%Y%m%d")
+    for back in range(1, max_back + 1):
+        d = (tbase - timedelta(days=back)).strftime("%Y%m%d")
+        rows = etf_pdf(ticker, d)
+        if rows:
+            return today, rows, d
+    return today, [], ""
+
+
+def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5) -> dict:
+    """전일 대비 구성 변화.
+
+    ⚠️ **비중(%)만 보면 안 된다** — 매니저가 아무 매매를 안 해도 담고 있는 종목의
+    주가가 오르내리면 비중은 저절로 움직인다. 실제 '비중조절'(운용 판단에 따른
+    매매)은 **계약수(수량) 변화**로만 판정할 수 있다. 그래서 수량 기준(실매매)과
+    비중 기준(주가효과 포함)을 분리해 담는다.
+    """
+    tmap = {r["code"]: r for r in today}
+    pmap = {r["code"]: r for r in prev}
+
+    added = [tmap[c] for c in tmap.keys() - pmap.keys()]
+    removed = [pmap[c] for c in pmap.keys() - tmap.keys()]
+    added.sort(key=lambda r: r.get("weight") or 0, reverse=True)
+    removed.sort(key=lambda r: r.get("weight") or 0, reverse=True)
+
+    # 수량 공시 여부는 **컬럼 유무**로 판단한다 — 변동 건수로 판단하면 "수량은 있는데
+    # 오늘 매매가 없었다"와 "KRX가 수량을 안 준다"가 구분되지 않아, 변동 없는 날
+    # 리포트가 근거 없이 비중 기준으로 바뀌어버린다.
+    has_qty = any(r.get("qty") is not None for r in today) and \
+        any(r.get("qty") is not None for r in prev)
+
+    qty_moves, weight_moves = [], []
+    for code in tmap.keys() & pmap.keys():
+        t, p = tmap[code], pmap[code]
+        if t.get("qty") is not None and p.get("qty") is not None and p["qty"]:
+            dq = t["qty"] - p["qty"]
+            if dq:
+                qty_moves.append({
+                    "name": t["name"], "code": code, "dq": dq,
+                    "qty_pct": dq / p["qty"] * 100,
+                    "weight": t.get("weight"),
+                    "dw": (t["weight"] - p["weight"])
+                    if t.get("weight") is not None and p.get("weight") is not None else None,
+                })
+        if t.get("weight") is not None and p.get("weight") is not None:
+            dw = t["weight"] - p["weight"]
+            if dw:
+                weight_moves.append({"name": t["name"], "code": code,
+                                     "dw": dw, "weight": t["weight"]})
+
+    qty_moves.sort(key=lambda r: r["dq"], reverse=True)
+    weight_moves.sort(key=lambda r: r["dw"], reverse=True)
+    buys = [m for m in qty_moves if m["dq"] > 0][:top]
+    sells = [m for m in qty_moves if m["dq"] < 0][-top:][::-1] if qty_moves else []
+
+    return {
+        "count_today": len(today),
+        "count_prev": len(prev),
+        "added": added[:top],
+        "removed": removed[:top],
+        "buys": buys,
+        "sells": sells,
+        "n_buys": sum(1 for m in qty_moves if m["dq"] > 0),
+        "n_sells": sum(1 for m in qty_moves if m["dq"] < 0),
+        "weight_up": [m for m in weight_moves if m["dw"] > 0][:top],
+        "weight_down": ([m for m in weight_moves if m["dw"] < 0][-top:][::-1]
+                        if weight_moves else []),
+        "has_qty": has_qty,
+    }
+
+
 def fetch_flows(cfg: dict | None = None) -> dict:
     """6번 섹션용 수급 데이터 묶음 (전부 best-effort — 실패해도 빈 dict)."""
     cfg = cfg or {}
