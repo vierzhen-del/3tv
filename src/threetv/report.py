@@ -1330,6 +1330,19 @@ def _fmt_pp(v: float | None) -> str:
     return f"{'+' if v > 0 else '−'}{abs(v):.2f}%p"
 
 
+def _move_tail(m: dict) -> str:
+    """수량 변동 한 줄의 꼬리 — 현재 비중과 비중 변화(참고).
+
+    비중은 주가 등락이 섞인 값이라 매매 근거가 아니라 '이 종목이 포트에서 얼마나
+    큰가'를 보여주는 맥락으로만 붙인다.
+    """
+    if m.get("weight") is None:
+        return ""
+    tail = f" · 비중 {m['weight']:.2f}%"
+    dw = _fmt_pp(m.get("dw"))
+    return f"{tail} ({dw})" if dw else tail
+
+
 def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
     """ETF 1종의 전일 대비 구성 변화 블록.
 
@@ -1341,8 +1354,13 @@ def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
     if prev_date:
         head += f" · {prev_date[4:6]}/{prev_date[6:8]} 대비"
     if diff.get("has_qty"):
-        head += f" · 순매수 {diff['n_buys']} / 순매도 {diff['n_sells']}"
+        head += f" · 매수 {diff['n_buys']} / 매도 {diff['n_sells']}"
     lines.append(head)
+    # 바스켓(설정단위) 자체가 움직였으면 개별 매매와 헷갈리지 않게 따로 알린다
+    shift = diff.get("basket_shift") or 0
+    if abs(shift) >= 1:
+        lines.append(f"⚙️ 설정단위 전체 {_fmt_pp(shift).replace('%p', '%')} 조정"
+                     " <i>(개별 매매 아님)</i>")
 
     if diff["added"]:
         items = ", ".join(
@@ -1357,17 +1375,11 @@ def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
         if diff["buys"]:
             lines.append("📈 매수(수량↑)")
             for m in diff["buys"]:
-                dw = _fmt_pp(m.get("dw"))
-                tail = f" · 비중 {m['weight']:.2f}%" if m.get("weight") is not None else ""
-                tail += f" ({dw})" if dw else ""
-                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{tail}")
+                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{_move_tail(m)}")
         if diff["sells"]:
             lines.append("📉 매도(수량↓)")
             for m in diff["sells"]:
-                dw = _fmt_pp(m.get("dw"))
-                tail = f" · 비중 {m['weight']:.2f}%" if m.get("weight") is not None else ""
-                tail += f" ({dw})" if dw else ""
-                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{tail}")
+                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{_move_tail(m)}")
         if not diff["buys"] and not diff["sells"] and not diff["added"] and not diff["removed"]:
             lines.append("· 전일 대비 수량 변동 없음")
     else:

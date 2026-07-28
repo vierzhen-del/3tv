@@ -37,14 +37,18 @@ def test_weight_move_without_qty_change_is_not_a_trade():
 
 
 def test_qty_change_is_reported_as_trade():
-    prev = [_row("A", "엔비디아", 100, 50.0), _row("B", "마이크론", 200, 50.0)]
-    today = [_row("A", "엔비디아", 150, 55.0), _row("B", "마이크론", 120, 45.0)]
+    # 기준선(median)이 1.0이 되도록 안 움직인 종목을 둔다 — 실제 바스켓과 같은 모양
+    prev = [_row("A", "엔비디아", 100, 40.0), _row("B", "마이크론", 200, 40.0),
+            _row("C", "애플", 100, 20.0)]
+    today = [_row("A", "엔비디아", 150, 45.0), _row("B", "마이크론", 120, 35.0),
+             _row("C", "애플", 100, 20.0)]
     d = market.etf_pdf_diff(today, prev)
     assert [m["name"] for m in d["buys"]] == ["엔비디아"]
     assert [m["name"] for m in d["sells"]] == ["마이크론"]
     assert d["buys"][0]["dq"] == 50
     assert d["sells"][0]["dq"] == -80
     assert d["buys"][0]["dw"] == 5.0        # 비중 변화도 함께 실린다
+    assert abs(d["basket_shift"]) < 1e-9    # 바스켓 자체는 안 움직였다
 
 
 def test_diff_survives_missing_qty_column():
@@ -67,18 +71,21 @@ def test_review_marks_price_effect_when_qty_missing():
 
 
 def test_review_renders_trades_and_counts():
-    prev = [_row("A", "엔비디아", 100, 50.0), _row("B", "마이크론", 200, 50.0)]
-    today = [_row("A", "엔비디아", 150, 55.0), _row("B", "마이크론", 120, 45.0)]
+    prev = [_row("A", "엔비디아", 100, 40.0), _row("B", "마이크론", 200, 40.0),
+            _row("C", "애플", 100, 20.0)]
+    today = [_row("A", "엔비디아", 150, 45.0), _row("B", "마이크론", 120, 35.0),
+             _row("C", "애플", 100, 20.0)]
     d = market.etf_pdf_diff(today, prev)
     out = report_mod.generate_etf_review(
         SETTINGS, [{"name": "TIME 미국나스닥100액티브", "ticker": "426030",
                     "diff": d, "prev_date": "20260727"}])
     md = out["markdown_report"]
     assert "TIME 미국나스닥100액티브" in md and "426030" in md
-    assert "순매수 1 / 순매도 1" in md
+    assert "매수 1 / 매도 1" in md
     assert "07/27 대비" in md
     assert "엔비디아 +50주" in md
     assert "마이크론 −80주" in md
+    assert "설정단위" not in md            # 바스켓은 안 움직였으니 안내가 뜨면 안 된다
     assert out["title_keyword"] == "ETF구성변화"
 
 
@@ -103,8 +110,80 @@ def test_etf_pdf_returns_empty_without_pykrx(monkeypatch):
 
 
 def test_etf_pdf_diff_top_limit():
+    # 7종목은 그대로(=기준선), 3종목만 실제로 늘렸다
     prev = [_row(str(i), f"종목{i}", 100, 10.0) for i in range(10)]
-    today = [_row(str(i), f"종목{i}", 100 + (10 - i), 10.0) for i in range(10)]
-    d = market.etf_pdf_diff(today, prev, top=3)
-    assert len(d["buys"]) == 3
-    assert d["n_buys"] == 10            # 표시는 3개지만 집계는 전체
+    today = [_row(str(i), f"종목{i}", 100 + (20 if i < 3 else 0), 10.0)
+             for i in range(10)]
+    d = market.etf_pdf_diff(today, prev, top=2)
+    assert len(d["buys"]) == 2
+    assert d["n_buys"] == 3             # 표시는 2개지만 집계는 전체
+
+
+# ── 2026-07-28 KRX 실조회에서 드러난 두 결함의 회귀 방지 ──
+
+def test_basket_wide_rescale_is_not_counted_as_trades():
+    """0015B0 실측: 50종목 중 46종목이 −0.1~−0.5주씩 줄었다. 이건 46번의 매도
+    판단이 아니라 설정단위(CU) 바스켓 전체가 리스케일된 것이다."""
+    prev = [_row(str(i), f"종목{i}", 100.0, 2.0) for i in range(50)]
+    today = [_row(str(i), f"종목{i}", 99.7, 2.0) for i in range(50)]   # 전부 -0.3%
+    d = market.etf_pdf_diff(today, prev)
+    assert d["n_buys"] == 0 and d["n_sells"] == 0
+    assert d["basket_shift"] < 0
+
+
+def test_trade_is_still_caught_inside_a_rescaled_basket():
+    """바스켓이 통째로 줄어드는 와중에도 유독 크게 판 종목은 잡아내야 한다."""
+    prev = [_row(str(i), f"종목{i}", 100.0, 2.0) for i in range(50)]
+    today = [_row(str(i), f"종목{i}", 99.7, 2.0) for i in range(50)]
+    today[7]["qty"] = 50.0             # 이 종목만 절반으로 감축 = 실제 매도
+    d = market.etf_pdf_diff(today, prev)
+    assert [m["name"] for m in d["sells"]] == ["종목7"]
+    assert d["n_sells"] == 1
+
+
+def test_weight_derived_from_amount_when_krx_reports_zero(monkeypatch):
+    """KRX는 해외 상장 구성종목의 '비중'을 0으로 준다(426030·0015B0 실측).
+    금액은 정상이므로 금액 기준으로 환산해야 리포트가 0.00%로 도배되지 않는다."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["NVIDIA CORP", "AMAZON.COM INC"],
+         "계약수": [10, 5], "금액": [750, 250], "시가총액": [0, 0], "비중": [0.0, 0.0]},
+        index=["NVDA", "AMZN"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("426030", "20260728")
+    assert [round(r["weight"], 1) for r in rows] == [75.0, 25.0]
+
+
+def test_real_weight_is_not_overwritten(monkeypatch):
+    """국내주식 ETF처럼 비중이 정상으로 오면 건드리지 않는다."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["삼성전자", "SK하이닉스"], "계약수": [10, 5],
+         "금액": [750, 250], "비중": [60.0, 40.0]},
+        index=["005930", "000660"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("441800", "20260728")
+    assert [r["weight"] for r in rows] == [60.0, 40.0]
+
+
+def test_review_flags_basket_rescale_in_text():
+    prev = [_row(str(i), f"종목{i}", 100.0, 2.0) for i in range(50)]
+    today = [_row(str(i), f"종목{i}", 95.0, 2.0) for i in range(50)]   # -5%
+    d = market.etf_pdf_diff(today, prev)
+    out = report_mod.generate_etf_review(
+        SETTINGS, [{"name": "KOACT", "ticker": "0015B0", "diff": d,
+                    "prev_date": "20260727"}])
+    assert "설정단위" in out["markdown_report"]
+    assert "개별 매매 아님" in out["markdown_report"]

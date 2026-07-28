@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import functools
 import math
+import statistics
 from datetime import datetime, timedelta
 
 from .common import KST, log
@@ -471,6 +472,18 @@ def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
             "amount": _num(r[amt_col]) if amt_col else None,
             "weight": _num(r[w_col]) if w_col else None,
         })
+
+    # KRX는 **해외 상장 구성종목의 '비중' 컬럼을 0으로 준다** (2026-07-28 실측:
+    # 426030·0015B0의 미국 주식은 전부 0.00, 국내주식만 담는 441800은 정상).
+    # 금액은 정상적으로 주므로 금액 기준으로 직접 환산한다 — 안 하면 해외형 ETF
+    # 리포트의 비중이 전부 0.00%로 나가 쓸모가 없다.
+    if sum(r["weight"] or 0 for r in rows) < 1:
+        total = sum(r["amount"] or 0 for r in rows)
+        if total > 0:
+            for r in rows:
+                r["weight"] = (r["amount"] or 0) / total * 100
+            log.info("ETF PDF %s: 비중 미공시 → 금액 기준으로 환산", ticker)
+
     log.info("ETF PDF %s %s: %d종목 (컬럼 %s)", ticker, date_ymd, len(rows),
              list(df.columns)[:6])
     return rows
@@ -504,13 +517,20 @@ def etf_pdf_with_prev(ticker: str, date_ymd: str, max_back: int = 7
     return today, [], ""
 
 
-def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5) -> dict:
+def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5,
+                 min_rel: float = 0.02) -> dict:
     """전일 대비 구성 변화.
 
     ⚠️ **비중(%)만 보면 안 된다** — 매니저가 아무 매매를 안 해도 담고 있는 종목의
     주가가 오르내리면 비중은 저절로 움직인다. 실제 '비중조절'(운용 판단에 따른
     매매)은 **계약수(수량) 변화**로만 판정할 수 있다. 그래서 수량 기준(실매매)과
     비중 기준(주가효과 포함)을 분리해 담는다.
+
+    ⚠️ **수량 변화도 그대로 쓰면 안 된다** — PDF는 설정단위(CU) 1좌 기준 바스켓이라
+    CU 자체가 조정되면 **전 종목 수량이 한꺼번에 같은 비율로** 움직인다. 2026-07-28
+    실측에서 0015B0은 50종목 중 46종목이 −0.1~−0.5주씩 줄었는데, 이건 46번의 매도
+    판단이 아니라 바스켓 전체 리스케일이다. 그래서 전 종목 수량비의 **중앙값**을
+    바스켓 배율로 잡고, 거기서 `min_rel` 이상 벗어난 종목만 실제 매매로 센다.
     """
     tmap = {r["code"]: r for r in today}
     pmap = {r["code"]: r for r in prev}
@@ -526,15 +546,24 @@ def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5) -> dict:
     has_qty = any(r.get("qty") is not None for r in today) and \
         any(r.get("qty") is not None for r in prev)
 
+    common = tmap.keys() & pmap.keys()
+    ratios = [tmap[c]["qty"] / pmap[c]["qty"] for c in common
+              if tmap[c].get("qty") is not None and pmap[c].get("qty")]
+    scale = statistics.median(ratios) if ratios else 1.0
+    # 바스켓 전체가 1% 넘게 리스케일되면 그 사실 자체를 리포트에 알린다
+    basket_shift = (scale - 1) * 100
+
     qty_moves, weight_moves = [], []
-    for code in tmap.keys() & pmap.keys():
+    for code in common:
         t, p = tmap[code], pmap[code]
         if t.get("qty") is not None and p.get("qty") is not None and p["qty"]:
             dq = t["qty"] - p["qty"]
-            if dq:
+            # 바스켓 배율을 걷어낸 '상대 변화' — 이게 실제 운용 판단이다
+            rel = (t["qty"] / p["qty"]) / scale - 1 if scale else 0.0
+            if dq and abs(rel) >= min_rel:
                 qty_moves.append({
                     "name": t["name"], "code": code, "dq": dq,
-                    "qty_pct": dq / p["qty"] * 100,
+                    "rel": rel * 100,
                     "weight": t.get("weight"),
                     "dw": (t["weight"] - p["weight"])
                     if t.get("weight") is not None and p.get("weight") is not None else None,
@@ -545,10 +574,12 @@ def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5) -> dict:
                 weight_moves.append({"name": t["name"], "code": code,
                                      "dw": dw, "weight": t["weight"]})
 
-    qty_moves.sort(key=lambda r: r["dq"], reverse=True)
+    # 표시 순서는 수량이 아니라 **비중 규모**로 — 100주짜리 소형주보다 1주 움직인
+    # 대형주가 포트폴리오에 더 큰 영향이다
+    qty_moves.sort(key=lambda r: (r.get("weight") or 0), reverse=True)
     weight_moves.sort(key=lambda r: r["dw"], reverse=True)
     buys = [m for m in qty_moves if m["dq"] > 0][:top]
-    sells = [m for m in qty_moves if m["dq"] < 0][-top:][::-1] if qty_moves else []
+    sells = [m for m in qty_moves if m["dq"] < 0][:top]
 
     return {
         "count_today": len(today),
@@ -563,6 +594,7 @@ def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5) -> dict:
         "weight_down": ([m for m in weight_moves if m["dw"] < 0][-top:][::-1]
                         if weight_moves else []),
         "has_qty": has_qty,
+        "basket_shift": basket_shift,
     }
 
 

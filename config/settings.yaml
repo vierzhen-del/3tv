@@ -229,3 +229,5 @@ etf_review:
       name: "TIME korea플러스배당액티브"
     - ticker: "472150"
       name: "TIGER 배당커버드콜액티브"
+    - ticker: "0223R0"
+      name: "TIGER 미국테크NYSE100액티브"
