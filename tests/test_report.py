@@ -741,3 +741,58 @@ def test_night_digest_handles_empty_slots(tmp_path, monkeypatch):
     data = report_mod.generate_night_digest(SETTINGS, [], tmp_path)
     for key in REQUIRED_KEYS:
         assert data[key]
+
+
+def _slot_with_stocks(hour: str, texts: list[str], stocks: list[dict]) -> dict:
+    return {"hour_label": hour, "vision_results": [
+        {"timestamp_sec": i * 20, "type": "자료화면", "text": t, "stocks": stocks}
+        for i, t in enumerate(texts)
+    ]}
+
+
+def test_night_digest_fallback_does_not_leak_internal_tags(tmp_path, monkeypatch):
+    """2026-07-28 실장애: 열화 리포트에 <종목표시: ...> 내부 태그가 그대로 노출됨.
+
+    _material_digest()는 LLM 프롬프트 전용 포맷이라 이 태그를 남기지만, 사람이
+    보는 폴백 본문에는 절대 나오면 안 된다.
+    """
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    slots = [_slot_with_stocks("02", ["국제 뉴스: 미국-이란 공습 이틀째 중단"],
+                               [{"name": "나스닥100", "price": "28,693.50"}])]
+    data = report_mod.generate_night_digest(SETTINGS, slots, tmp_path)
+    assert "<종목표시" not in data["markdown_report"]
+    assert "나스닥100 28,693.50" in data["markdown_report"]
+
+
+def test_night_digest_fallback_dedupes_near_identical_frames(tmp_path, monkeypatch):
+    """같은 슬롯 안에서 20초 간격 프레임이 거의 동일한 텍스트를 반복해도
+    한 번만 남는다 (벽글씨 방지)."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    same_text = "국제 뉴스: 미국-이란 공습 이틀째 중단, 엔비디아 오픈AI에 2500억 금융보증"
+    slots = [_slot_with_stocks("02", [same_text, same_text], [])]
+    data = report_mod.generate_night_digest(SETTINGS, slots, tmp_path)
+    assert data["markdown_report"].count(same_text) == 1
+
+
+def test_night_digest_fallback_marks_unchanged_slot(tmp_path, monkeypatch):
+    """슬롯 간(예: 01시→02시) 화면이 그대로면 원문을 반복하지 않고 '변동없음'만 남긴다."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    same_text = "나스닥100 28,693.50 변동 없음"
+    slots = [_slot_with_stocks("01", [same_text], []),
+             _slot_with_stocks("02", [same_text], [])]
+    data = report_mod.generate_night_digest(SETTINGS, slots, tmp_path)
+    assert data["markdown_report"].count(same_text) == 1
+    assert "변동없음" in data["markdown_report"]
+
+
+def test_noon_report_fallback_does_not_leak_internal_tags(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    vision = [{"timestamp_sec": 0, "type": "자료화면", "text": "코스피 상승 출발",
+               "stocks": [{"name": "코스피", "price": "3,160.2"}]}]
+    data = report_mod.generate_noon_report(SETTINGS, vision, "", KR_INTRADAY, tmp_path)
+    assert "<종목표시" not in data["markdown_report"]
+    assert "코스피 3,160.2" in data["markdown_report"]

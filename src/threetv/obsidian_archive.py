@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import glob as globmod
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -140,22 +141,120 @@ def obsidian_deeplink(obsidian_cfg: dict, date: datetime | None = None) -> str:
             f"&query={quote(f'3protv오늘_{ymd}')}")
 
 
-def _frontmatter(date: datetime, keyword: str, indices: list[dict],
-                 holdings_mentioned: list[dict]) -> str:
-    mentioned = [h["name"] for h in holdings_mentioned if h.get("mentioned")]
-    idx_lines = "\n".join(
-        f'  - "{q["name"]}: {q["close"]} ({q["direction"]}{abs(q["change_pct"])}%)"'
-        for q in indices[:6]
-    )
-    return f"""---
-date: {date.strftime("%Y-%m-%d")}
-tags: [3protv, 시황]
-keyword: "{keyword}"
-holdings_mentioned: {mentioned if mentioned else "[]"}
-indices:
-{idx_lines if idx_lines else "  []"}
----
-"""
+def _frontmatter(
+    date: datetime, session_tag: str, keyword: str = "",
+    indices: list[dict] | None = None, holdings_mentioned: list[dict] | None = None,
+) -> str:
+    """모든 노트 공통 frontmatter — 연도/월/세션 태그를 심어 옵시디안 검색·
+    Dataview에서 연관검색(같은 달/세션끼리 묶어보기)이 되게 한다."""
+    tags = ["3protv", session_tag, f"3protv/{date:%Y}", f"3protv/{date:%Y-%m}"]
+    lines = [
+        "---",
+        f'date: {date:%Y-%m-%d}',
+        f'year: {date:%Y}',
+        f'month: "{date:%Y-%m}"',
+        f'session: {session_tag}',
+        f'tags: [{", ".join(tags)}]',
+    ]
+    if keyword:
+        lines.append(f'keyword: "{keyword}"')
+    if holdings_mentioned is not None:
+        mentioned = [h["name"] for h in holdings_mentioned if h.get("mentioned")]
+        lines.append(f'holdings_mentioned: {mentioned if mentioned else "[]"}')
+    if indices is not None:
+        idx_lines = "\n".join(
+            f'  - "{q["name"]}: {q["close"]} ({q["direction"]}{abs(q["change_pct"])}%)"'
+            for q in indices[:6]
+        )
+        lines.append("indices:")
+        lines.append(idx_lines if idx_lines else "  []")
+    lines.append("---\n")
+    return "\n".join(lines)
+
+
+_DAY_LABELS = {
+    "3protv오늘": "일일시황",
+    "3protv기사": "종목기사",
+    "3protv정오": "정오시황",
+    "3protv야간": "야간미장",
+}
+_WEEKDAY_KO = "월화수목금토일"
+RELATED_MARKER = "<!-- 3tv:related -->"
+
+
+def _relink_day(month_dir: Path, ymd: str) -> list[Path]:
+    """같은 날짜(ymd)의 노트끼리 하단에 '관련 노트' 위키링크를 채워 넣는다.
+
+    옵시디안 백링크/그래프뷰로 그날 시황·기사·정오·야간 노트가 서로 연결돼
+    보이게 하는 것이 목적 — 파일명이 매번 키워드로 달라져 자동 백링크만으론
+    안 잡히므로 명시적으로 링크한다. 새 노트가 추가될 때마다 그날 전체 노트를
+    다시 훑어 재작성하므로 순서와 무관하게 항상 최신 상태를 유지한다.
+    """
+    files = sorted(f for f in month_dir.glob(f"*{ymd}*.md") if f.name != "_index.md")
+    changed = []
+    for f in files:
+        siblings = [g for g in files if g != f]
+        content = f.read_text(encoding="utf-8")
+        body = content.split(RELATED_MARKER, 1)[0].rstrip()
+        if siblings:
+            links = " · ".join(f"[[{g.stem}]]" for g in siblings)
+            block = f"\n\n{RELATED_MARKER}\n---\n🔗 같은 날 다른 3tv 리포트: {links}\n"
+        else:
+            block = f"\n\n{RELATED_MARKER}\n"
+        new_content = body + block
+        if new_content != content:
+            f.write_text(new_content, encoding="utf-8")
+            changed.append(f)
+    return changed
+
+
+def _rebuild_month_index(vault: Path, base_path: str, date: datetime) -> Path:
+    """월별 인덱스(MOC) 노트 재생성 — 연도/월/일자 단위 검색·요약 참조용.
+
+    호출될 때마다 그 달 폴더를 훑어 처음부터 다시 쓰므로(멱등) 순서·중복
+    걱정 없이 항상 그 시점의 실제 파일 구성을 반영한다.
+    """
+    month_dir = vault / base_path / date.strftime("%Y") / date.strftime("%m")
+    month_dir.mkdir(parents=True, exist_ok=True)
+    by_day: dict[str, list[tuple[str, str]]] = {}
+    for f in sorted(month_dir.glob("*.md")):
+        if f.name == "_index.md":
+            continue
+        m = re.search(r"_(\d{8})", f.stem)
+        if not m:
+            continue
+        ymd = m.group(1)
+        prefix = f.stem.split("_")[0]
+        label = _DAY_LABELS.get(prefix, prefix)
+        by_day.setdefault(ymd, []).append((label, f.stem))
+    lines = [
+        "---",
+        f'tags: [3protv, index, "3protv/{date:%Y}", "3protv/{date:%Y-%m}"]',
+        "---",
+        f"# {date:%Y}년 {date:%m}월 3protv 인덱스",
+        "",
+        "일자별 시황 리포트 모음 — 검색/Dataview 참조용.",
+        "",
+    ]
+    for ymd in sorted(by_day):
+        d = datetime.strptime(ymd, "%Y%m%d")
+        items = " · ".join(
+            f"[[{stem}|{label}]]" for label, stem in sorted(by_day[ymd])
+        )
+        lines.append(f"- **{d:%Y-%m-%d} ({_WEEKDAY_KO[d.weekday()]})**: {items}")
+    path = month_dir / "_index.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _index_and_relink(vault: Path, base_path: str, month_dir: Path, date: datetime,
+                      ymd: str, already: set[Path]) -> list[Path]:
+    """`_relink_day` + `_rebuild_month_index`를 함께 실행하고, git add에 추가할
+    새 변경 파일 목록(이미 add 예정인 파일 제외)을 돌려준다."""
+    changed = _relink_day(month_dir, ymd)
+    index_path = _rebuild_month_index(vault, base_path, date)
+    extra = {p for p in changed} | {index_path}
+    return [p for p in extra if p not in already]
 
 
 def read_us_section_today(obsidian_cfg: dict) -> tuple[str, str]:
@@ -205,10 +304,14 @@ def archive_simple_report(
         month_dir.mkdir(parents=True, exist_ok=True)
         safe_kw = "".join(c for c in keyword if c.isalnum() or c in "가-힣_-")[:20]
         path = month_dir / f"{file_prefix}_{ymd}_{safe_kw or '리포트'}.md"
-        path.write_text(f"# {path.stem}\n\n{markdown_report}\n", encoding="utf-8")
+        session_tag = _DAY_LABELS.get(file_prefix, file_prefix)
+        front = _frontmatter(date, session_tag, keyword=keyword)
+        path.write_text(f"{front}# {path.stem}\n\n{markdown_report}\n", encoding="utf-8")
 
         rel = path.relative_to(vault)
-        subprocess.run(["git", "-C", str(vault), "add", str(rel)],
+        extra = _index_and_relink(vault, obsidian_cfg["base_path"], month_dir, date, ymd, {path})
+        to_add = [str(rel)] + [str(p.relative_to(vault)) for p in extra]
+        subprocess.run(["git", "-C", str(vault), "add", *to_add],
                        check=True, capture_output=True)
         commit = subprocess.run(
             ["git", "-C", str(vault),
@@ -267,7 +370,7 @@ def archive_report(
             head = US_NEWS_HEAD if session == "us" else KR_NEWS_HEAD
             other = KR_NEWS_HEAD if session == "us" else US_NEWS_HEAD
             prev = news_path.read_text(encoding="utf-8") if news_path.exists() \
-                else f"# {news_note_name(date)}\n"
+                else _frontmatter(date, "종목기사") + f"# {news_note_name(date)}\n"
             if head in prev:
                 # 같은 세션 재실행 → 내 섹션만 걷어내고 다른 세션 섹션은 보존
                 before, rest = prev.split(head, 1)
@@ -291,14 +394,19 @@ def archive_report(
                 content += section
         else:
             title = f"# {path.stem}\n"
-            content = _frontmatter(date, keyword, indices, holdings_mentioned) + title + section
+            content = _frontmatter(date, "일일시황", keyword=keyword, indices=indices,
+                                   holdings_mentioned=holdings_mentioned) + title + section
 
         path.write_text(content, encoding="utf-8")
 
         rel = path.relative_to(vault)
+        ymd = date.strftime("%Y%m%d")
+        already = {path} | ({news_path} if news_path is not None else set())
+        extra = _index_and_relink(vault, obsidian_cfg["base_path"], path.parent, date, ymd, already)
         to_add = [str(rel)]
         if news_path is not None:
             to_add.append(str(news_path.relative_to(vault)))
+        to_add += [str(p.relative_to(vault)) for p in extra]
         subprocess.run(["git", "-C", str(vault), "add", *to_add],
                        check=True, capture_output=True)
         commit = subprocess.run(

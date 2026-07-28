@@ -163,6 +163,40 @@ def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> st
     return digest[:limit_chars]
 
 
+def _clean_digest_fallback(vision_results: list[dict], limit_chars: int = 4000) -> str:
+    """LLM 없이 **사람에게 그대로 보여줄** 자료화면 요약.
+
+    `_material_digest()`는 LLM 프롬프트용이라 `<종목표시: ...>` 같은 내부 태그를
+    그대로 남긴다 — LLM이 이해하고 자연어로 풀어써 주는 걸 전제하기 때문이다.
+    그런데 리포트 생성이 통째로 실패하는 열화 경로에서는 이 원문이 **치환 없이
+    그대로 텔레그램에 노출**되는 버그가 있었다(2026-07-28 실측, night-digest
+    슬롯 데이터 부족으로 열화 전환된 실제 발송 리포트에서 확인). 그래서
+    ① 태그를 벗겨 읽을 수 있는 불릿으로, ② 프레임마다 반복되는 동일 텍스트는
+    한 번만, ③ 지표는 슬롯의 마지막(최신) 프레임 값만 한 줄로 압축한다.
+    """
+    if not vision_results:
+        return "(자료화면 없음)"
+    seen_text: set[str] = set()
+    lines: list[str] = []
+    last_stocks: list[str] = []
+    for r in vision_results:
+        ts = r.get("timestamp_sec", 0)
+        mm, ss = divmod(int(ts), 60)
+        t = (r.get("text") or "").strip()
+        if t and t not in seen_text:
+            seen_text.add(t)
+            lines.append(f"[{mm:02d}:{ss:02d}] {t}")
+        stocks = [
+            f"{s.get('name')} {s.get('price') or ''} {s.get('change') or ''}".strip()
+            for s in (r.get("stocks") or []) if s.get("name")
+        ]
+        if stocks:
+            last_stocks = stocks
+    if last_stocks:
+        lines.append("· " + " · ".join(last_stocks))
+    return ("\n".join(lines) or "(자료화면 없음)")[:limit_chars]
+
+
 _MARK_RE = re.compile(r"===([A-Z]+)===")
 
 # ===NEWS=== 안에서 '주요종목'과 '그 외'를 가르는 표식. 그 외는 접기 블록으로 내린다.
@@ -898,7 +932,7 @@ def generate_noon_report(
 
     banner = "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
     fallback_body = (
-        f"{banner}📌 12시 국내 시황 ({today})\n{material or '(자료화면 없음)'}\n\n"
+        f"{banner}📌 12시 국내 시황 ({today})\n{_clean_digest_fallback(vision_results)}\n\n"
         f"💹 {idx_title}\n{idx_block}\n\n{disclaimer}"
     )
     return _simple_report(settings, prompt, "12시시황", fallback_body, out_dir)
@@ -927,12 +961,30 @@ def generate_night_digest(
             h = 0
         return h + 24 if h < 12 else h
 
+    ordered_slots = sorted(slots, key=_slot_order)
+
     slot_texts = []
-    for s in sorted(slots, key=_slot_order):
+    for s in ordered_slots:
         material = _material_digest(s.get("vision_results") or [])
         if material:
             slot_texts.append(f"### {s.get('hour_label', '?')}시\n{material}")
     slots_block = "\n\n".join(slot_texts) or "(수집된 슬롯 없음)"
+
+    fallback_slot_texts = []
+    prev_clean = None
+    for s in ordered_slots:
+        clean = _clean_digest_fallback(s.get("vision_results") or [])
+        if clean == "(자료화면 없음)":
+            continue
+        hour = s.get("hour_label", "?")
+        if clean == prev_clean:
+            # 화면이 안 바뀐 슬롯을 그대로 반복 표시하지 않는다(2026-07-28 실장애:
+            # 인접 프레임이 거의 동일한 텍스트를 계속 반복해 열화 리포트가 벽글씨가 됨)
+            fallback_slot_texts.append(f"### {hour}시\n(직전 슬롯과 동일 — 변동없음)")
+        else:
+            fallback_slot_texts.append(f"### {hour}시\n{clean}")
+        prev_clean = clean
+    slots_fallback_block = "\n\n".join(fallback_slot_texts) or "(수집된 슬롯 없음)"
 
     prompt = f"""당신은 한국 개인투자자를 위한 시황 애널리스트입니다.
 "오선의 미국 증시 라이브"({today} 밤~오늘 새벽, 22:00~06:00 KST) 방송을 매시 정각
@@ -961,7 +1013,7 @@ def generate_night_digest(
 {slots_block}"""
 
     banner = "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
-    fallback_body = f"{banner}📊 야간 미장 슬롯 원문 ({today})\n{slots_block}\n\n{disclaimer}"
+    fallback_body = f"{banner}📊 야간 미장 슬롯 원문 ({today})\n{slots_fallback_block}\n\n{disclaimer}"
     return _simple_report(settings, prompt, "야간미장", fallback_body, out_dir)
 
 
