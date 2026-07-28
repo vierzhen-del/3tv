@@ -24,6 +24,7 @@ def test_etf_movers_resolve_names_not_tickers(monkeypatch):
             return "20260728"
 
     monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    monkeypatch.setattr(market, "_etf_name_map", lambda: {})   # 개별 조회 경로 검증
     market.etf_name.cache_clear()
     market.last_biz_days.cache_clear()
     out = market.kr_etf_top_movers(n=5)
@@ -38,6 +39,7 @@ def test_etf_name_falls_back_to_ticker(monkeypatch):
             raise RuntimeError("KRX down")
 
     monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    monkeypatch.setattr(market, "_etf_name_map", lambda: {})
     market.etf_name.cache_clear()
     assert market.etf_name("0197X0") == "0197X0"
 
@@ -93,3 +95,35 @@ def test_flow_lines_without_summary_still_renders():
     """summary 조회가 실패해도 investors 원자료로 폴백한다."""
     out = report_mod._flow_lines({"investors": [{"investor": "개인", "net": 10.0}]})
     assert "  · 개인: +10" in out
+
+
+def test_etf_name_map_is_built_once(monkeypatch):
+    """pykrx의 get_etf_ticker_name은 호출마다 전종목 목록을 3번 새로 받는다.
+    종목 20개면 60요청 — 맵을 한 번만 만들어 재사용해야 한다."""
+    calls = {"n": 0}
+
+    class _Stub:
+        def get_etf_ticker_name(self, t):
+            calls["n"] += 1
+            return "개별조회로_내려옴"
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    monkeypatch.setattr(market, "_etf_name_map",
+                        lambda: {"0197X0": "KODEX 코스닥150레버리지",
+                                 "0193L0": "TIGER 200선물인버스2X"})
+    market.etf_name.cache_clear()
+    assert market.etf_name("0197X0") == "KODEX 코스닥150레버리지"
+    assert market.etf_name("0193L0") == "TIGER 200선물인버스2X"
+    assert calls["n"] == 0            # 맵에 있으면 개별 조회를 하지 않는다
+
+
+def test_etf_name_falls_back_to_individual_lookup(monkeypatch):
+    """맵 생성이 실패해도(pykrx 내부구조 변경) 공개 API로 이름을 채운다."""
+    class _Stub:
+        def get_etf_ticker_name(self, t):
+            return "TIGER 반도체TOP10레버리지"
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    monkeypatch.setattr(market, "_etf_name_map", lambda: {})
+    market.etf_name.cache_clear()
+    assert market.etf_name("488080") == "TIGER 반도체TOP10레버리지"

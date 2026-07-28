@@ -415,20 +415,51 @@ def kr_top_net_purchases(investor: str = "외국인", n: int = 10,
         return {}
 
 
+@functools.lru_cache(maxsize=1)
+def _etf_name_map() -> dict[str, str]:
+    """ETF/ETN/ELW 종목코드 → 종목명 맵을 **한 번만** 만든다.
+
+    ⚠️ pykrx의 `get_etf_ticker_name()`은 호출할 때마다 `EtxTicker()`를 새로
+    생성하고, 그 생성자가 ETF·ETN·ELW **전종목 목록을 매번 새로 받아온다(요청 3건)**.
+    종목 20개면 60건이 나가 느리고 KRX 스로틀링을 부른다. 목록은 하루 안에 바뀌지
+    않으므로 한 번만 받아 캐시한다.
+
+    내부 모듈을 직접 쓰므로 pykrx 버전이 바뀌면 실패할 수 있다 — 그때는 빈 맵을
+    돌려주고 `etf_name()`이 공개 API 개별 조회로 폴백한다(느릴 뿐 결과는 같다).
+    """
+    if _pykrx_stock() is None:
+        return {}
+    try:
+        from pykrx.website.krx.etx.ticker import EtxTicker
+
+        df = EtxTicker().df
+        mapping = {str(t).strip(): str(n).strip()
+                   for t, n in df["종목명"].items() if str(n).strip()}
+        log.info("ETF 종목명 맵 %d건 로딩", len(mapping))
+        return mapping
+    except Exception as e:
+        log.warning("ETF 종목명 맵 생성 실패 — 개별 조회로 폴백: %s", e)
+        return {}
+
+
 @functools.lru_cache(maxsize=512)
 def etf_name(ticker: str) -> str:
     """ETF 종목코드 → 종목명. 실패하면 코드를 그대로 돌려준다.
 
     ⚠️ `get_etf_price_change_by_ticker`는 **종목명 컬럼을 주지 않는다** — 그래서
-    리포트에 "0197X0 (29.67%)"처럼 코드가 그대로 실렸다(2026-07-29 텔레그램 실측).
+    리포트에 "0197X0 (29.1%)"처럼 코드가 그대로 실렸다(2026-07-29 텔레그램 실측).
     사람이 읽을 수 없으니 여기서 이름을 채운다.
     """
+    name = _etf_name_map().get(ticker)
+    if name:
+        return name
     stock = _pykrx_stock()
     if stock is None:
         return ticker
     try:
         return (stock.get_etf_ticker_name(ticker) or "").strip() or ticker
     except Exception:
+        log.debug("ETF 종목명 조회 실패: %s", ticker)
         return ticker
 
 
