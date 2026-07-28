@@ -462,6 +462,74 @@ def test_summary_slide_is_not_quote_table():
     assert report_mod._is_quote_table(slide, [{"name": "엔비디아"}]) is False
 
 
+# 2026-07-28 실장애: "전일, 해외/국내 시장 흐름 및 특징" 요약 슬라이드가 16~17개
+# 종목을 한 줄씩 나열한다는 이유만으로 "종목 12개 이상 → 시세판" 규칙에 걸려
+# kr 리포트에서 매일 통째로 빠졌다. 실제 방송 캡처 원문(사용자 스크린샷)으로 재현한다.
+US_SUMMARY_SLIDE = (
+    "전일, 해외 시장 흐름 및 특징\n"
+    "다우 +0.51% / 나스닥 -0.18% / S&P500 +0.02% (7,413P)\n"
+    "WTI $79.6 / 달러인덱스 101.3 / 원화 1,465원 / 위안화 6.76위안\n"
+    "특징:\n"
+    "SOX -2.23% / 엔비디아 -4.99%($196), 샌디스크 -10.9%, 마이크론 -1.25%($900)\n"
+    "애플 +1.17%, 테슬라 -1.21%, MS +1.94%, 아마존 -0.31%, 메타 -0.22%, 알파벳 +2.13%\n"
+    "오라클 +4.27%, SKHY -7.47%($143), SPCX -1.36%($113)\n"
+)
+US_SUMMARY_STOCKS = [
+    {"name": n, "market": "US"} for n in
+    ["다우", "나스닥", "S&P500", "SOX", "엔비디아", "샌디스크", "마이크론",
+     "애플", "테슬라", "MS", "아마존", "메타", "알파벳", "오라클", "SKHY", "SPCX"]
+]  # 16개
+
+KR_SUMMARY_SLIDE = (
+    "전일, 국내 시장 흐름 및 특징\n"
+    "코스피 +0.97%(6,755P) / 코스닥 +2.22%(764P)\n"
+    "코스피: 개인 +2.1조 / 외국인 -2.99조 / 기관 +8,631억 (금투 +5,082억, 투신 +4,256억)\n"
+    "코스닥: 개인 -1,733억 / 외국인 -1,328억 / 기관 +2,830억 (금투 +2,193억, 투신 +412억)\n"
+    "특징 :\n"
+    "삼전 +1.80%, 하닉 +3.24%, NAVER +8.4%, 우리금융 +7.3%, 하이브 +6%\n"
+    "레인보우로보 +6.5%, 주성엔지 +6.3%, 원익IPS +5.4%, 펩트론 +13.7%, 현대무벡스 +13%\n"
+    "한화에어로 -8%, SK이노 -10%, S-OIL -9.7%, 현대로템 -16%, 한화시스템 -7.6%\n"
+)
+KR_SUMMARY_STOCKS = [
+    {"name": n, "market": "KR"} for n in
+    ["코스피", "코스닥", "삼전", "하닉", "NAVER", "우리금융", "하이브",
+     "레인보우로보", "주성엔지", "원익IPS", "펩트론", "현대무벡스",
+     "한화에어로", "SK이노", "S-OIL", "현대로템", "한화시스템"]
+]  # 17개
+
+
+def test_summary_slide_with_many_stocks_not_quote_table():
+    """종목이 12개를 넘어도 요약 슬라이드 앵커가 있으면 시세판으로 오판하지 않는다."""
+    assert report_mod._is_quote_table(US_SUMMARY_SLIDE, US_SUMMARY_STOCKS) is False
+    assert report_mod._is_quote_table(KR_SUMMARY_SLIDE, KR_SUMMARY_STOCKS) is False
+    assert len(US_SUMMARY_STOCKS) >= 12 and len(KR_SUMMARY_STOCKS) >= 12  # 회귀 조건 확인
+
+
+def test_real_quote_table_still_detected_without_anchor():
+    """앵커 화이트리스트를 넣어도 진짜 시세판(7/26 장애)은 여전히 걸러진다."""
+    assert report_mod._is_quote_table(QUOTE_TABLE, []) is True
+    many = [{"name": f"종목{i}"} for i in range(12)]
+    assert report_mod._is_quote_table("무슨 화면", many) is True
+
+
+def test_daily_summary_slides_survive_capture_blocks(tmp_path, llm_down):
+    """08시 전후 매일 나오는 요약 슬라이드 3종이 캡처 정리에서 빠지지 않는다."""
+    vision = [
+        {"timestamp_sec": 19 * 60, "type": "자료화면",
+         "text": US_SUMMARY_SLIDE, "stocks": US_SUMMARY_STOCKS},   # 08:04
+        {"timestamp_sec": 19 * 60, "type": "자료화면",
+         "text": KR_SUMMARY_SLIDE, "stocks": KR_SUMMARY_STOCKS},   # 08:04
+    ]
+    md = report_mod.generate_report(
+        SETTINGS, "kr", vision, "", INDICES, [], HOLDINGS, HOLDINGS_QUOTES, tmp_path,
+    )["markdown_report"]
+    assert "전일, 해외 시장 흐름 및 특징" in md
+    assert "전일, 국내 시장 흐름 및 특징" in md
+    assert "SPCX -1.36%" in md            # 16번째 항목까지 안 잘림 (VERBATIM_MAX_LINES_SUMMARY)
+    assert "한화시스템 -7.6%" in md        # 국내 슬라이드 마지막 줄도 보존
+    assert "코스피: 개인 +2.1조" in md     # 수급 3행 원문 보존
+
+
 def test_quote_table_excluded_from_8am_window(tmp_path, llm_down):
     """08시 전후는 흰 배경 슬라이드만 — 개별 종목 시세판은 제외한다."""
     vision = [

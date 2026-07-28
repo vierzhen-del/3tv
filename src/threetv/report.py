@@ -334,11 +334,23 @@ def _briefing_grouped(news_briefing: list[dict] | None) -> str:
     return "\n\n".join(blocks)
 
 
-VERBATIM_MAX_LINES = 15   # '화면 원문' 보존 시 한 화면당 최대 줄 수
+VERBATIM_MAX_LINES = 15         # '화면 원문' 보존 시 한 화면당 최대 줄 수
+VERBATIM_MAX_LINES_SUMMARY = 30  # 매일 나오는 요약 슬라이드(_SUMMARY_ANCHORS)는 더 길게 허용
 
 # 개별 종목 시세판을 가려내는 단서 — 이런 화면은 8시 전후 분석에서 제외한다
 # (사용자 확정 2026-07-26: 08시 전후는 흰 배경 '그림' 슬라이드만 보고 개별 주가는 미적용)
 _QUOTE_TABLE_HINTS = ("현재가", "거래량", "전일대비", "등락률", "체결")
+
+# 매일 나오는 3종 요약 슬라이드의 제목 — 이 앵커가 있으면 종목이 몇 개 나열됐든
+# 시세판이 아니라 방송 본 자료다. 2026-07-28 실측: "전일, 해외/국내 시장 흐름 및
+# 특징" 슬라이드가 종목을 16~17개 언급한다는 이유만으로 _is_quote_table()의
+# "종목 12개 이상" 규칙에 걸려 매일 통째로 캡처 정리에서 빠지고 있었다.
+_SUMMARY_ANCHORS = ("흐름 및 특징", "특징:", "특징 :", "시황 전망", "투자 대응", "시장 흐름")
+
+
+def _is_summary_slide(text: str) -> bool:
+    t = text or ""
+    return any(a in t for a in _SUMMARY_ANCHORS)
 
 # ETF 판별 — 삼프로TV(이 채널 한정)는 시황에서 ETF를 다루지 않으므로 전부 광고 취급.
 # 화면에 뜨는 ETF는 예외 없이 협찬·상품 홍보였다 (사용자 확정 2026-07-27).
@@ -378,7 +390,15 @@ def _is_quote_table(text: str, stocks: list | None) -> bool:
 
     2026-07-26 실측: 07:59 코스피/코스닥 시세판이 50줄 넘게 잡혀 리포트를 잠식했다.
     이런 화면은 '요약 슬라이드'가 아니라 단순 종목 나열이라 분석 가치가 낮다.
+
+    ⚠️ 2026-07-28 실측: "전일, 해외/국내 시장 흐름 및 특징" 요약 슬라이드가
+    16~17개 종목을 한 줄씩 나열한다는 이유만으로 아래 종목-개수 규칙에 걸려
+    매일 통째로 빠졌다. `_is_summary_slide()`(제목 앵커)에 걸리면 종목 수와
+    무관하게 시세판이 아니라고 먼저 확정한다 — 진짜 시세판(헤더 단어 2개↑ +
+    쉼표 구분 행 5줄↑)은 이 앵커가 없으므로 그 판정은 그대로 유지된다.
     """
+    if _is_summary_slide(text):
+        return False
     t = text or ""
     hits = sum(1 for h in _QUOTE_TABLE_HINTS if h in t)
     rows = [ln for ln in t.splitlines() if ln.count(",") >= 3]
@@ -462,8 +482,10 @@ def _capture_blocks(
         if _in_window(clock, verbatim_window) and text:
             # 화면 그대로 — 줄 구성 보존. 단 시세 표처럼 줄이 매우 많은 화면은
             # 상위 일부만 (2026-07-26 실측: 50줄 넘는 종목 시세판이 리포트를 잠식했다)
+            # 매일 나오는 요약 슬라이드(_is_summary_slide)는 20줄짜리도 있어 더 길게 허용
+            max_lines = VERBATIM_MAX_LINES_SUMMARY if _is_summary_slide(text) else VERBATIM_MAX_LINES
             lines = text.splitlines()
-            shown = lines[:VERBATIM_MAX_LINES]
+            shown = lines[:max_lines]
             body = "\n".join(shown)
             if len(lines) > len(shown):
                 body += f"\n…(총 {len(lines)}줄 중 {len(shown)}줄 표시)"
@@ -848,6 +870,12 @@ def generate_report(
      화면의 줄 구성을 그대로** 옮기세요. 항목 순서·구분자(/)·수치를 원문대로 유지.
    - ⚠️ 이 구간은 **흰 배경 그림·슬라이드만** 대상입니다. 개별 종목 시세판
      (종목명·현재가·거래량 나열)은 이미 제외돼 있으니 **개별 주가를 끌어와 쓰지 마세요.**
+   - ⚠️ **매일 나오는 요약 슬라이드 3종은 절대 누락하지 마세요** — 화면 캡처 블록에
+     있으면 반드시 전부 옮기세요:
+     ① `전일, 해외 시장 흐름 및 특징` ② `전일, 국내 시장 흐름 및 특징`
+     ③ `오늘 시황 전망 및 투자 대응`.
+     특히 ②의 **수급 3행**(코스피/코스닥 개인·외국인·기관 순매수, 금투·투신 세부)은
+     숫자 배치 자체가 정보이니 요약하지 말고 원문 그대로 옮기세요.
 
 4) 💼 **관심종목 업데이트** — 보유/관심 종목의 전일 종가·등락률 + 방송 언급 여부.
    언급된 종목은 줄 앞에 **📡** 를 붙이고 맥락을 한 줄로, 안 된 종목은 "언급 없음".
