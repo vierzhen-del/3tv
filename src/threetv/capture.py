@@ -147,7 +147,9 @@ def capture_live_session(settings: dict, session: str, out_dir: Path) -> Path:
 
     cap = settings["capture"]
     _, start, end = session_window(settings, session)
-    live_url = settings["channel"]["live_url"]
+    # us/kr은 3protv 채널 전역 URL을 쓰고, noon/night처럼 다른 채널을 보는 세션은
+    # sessions.<name>.live_url로 자신의 채널을 지정한다 (없으면 전역으로 폴백)
+    live_url = settings["sessions"][session].get("live_url") or settings["channel"]["live_url"]
     cookies = _cookies_file()
     out_file = out_dir / f"{session}_capture.mp4"
 

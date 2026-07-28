@@ -16,6 +16,17 @@
 | 07:55 | `kr` 시작 | 라이브 폴링 |
 | 07:55~08:25 | `kr` 녹화 | 방송2 한국 시황 — 흰색배경 자료화면 중심 요약 |
 | ~08:40 | `kr` 전송 | 🇰🇷 한국 당일 전망 (아침 us 리포트 연동) → 같은 옵시디안 파일에 병합 |
+| 12:00~12:10 | `noon` 녹화·전송 | 겸손은힘들다 "12시에 만나요" — 장중 시황 요약 + KR 지수 (종목기사 없음) |
+| 22:00~05:00 | `night` 슬롯 8회 | 오선의 미국 증시 라이브 — 매시 정각 5분씩 캡처해 볼트에 저장(리포트·발송 없음) |
+| 06:00 | `night` 종합·전송 | 8슬롯을 모아 지수 변동 궤적 + 주요 이벤트 리포트 1건 |
+
+`noon`/`night`은 2026-07-28 추가됐고 채널이 3protv와 달라 `sessions.<name>.live_url`로
+지정합니다. `night`은 GitHub Actions 단일 job이 최대 6시간이라 22:00~06:00(8h) 연속
+녹화가 불가능해 매시 슬롯 캡처(`night-slot.yml`, cron 8개) + 06시 종합(`night-digest.yml`)
+으로 나눴습니다 — 슬롯 간 데이터는 옵시디안 볼트(`_night_slots/`)로 전달합니다
+(`main.py`의 `--slot HH:MM`/`--digest`, `obsidian_archive.save_night_slot`/`read_night_slots`).
+Gemini 할당량은 `night`만 별도 버킷(`gemini-3.1-flash-lite`, `sessions.night.vision_model`)을
+써서 주간 세션(us/kr/noon, `gemini-2.5-flash` 20요청/일)과 섞이지 않습니다.
 
 자료화면 판별: `us` 세션은 흰배경 슬라이드 외에 **어두운 배경의 전체화면 데이터 화면(Finviz, 차트 사이트)과 영문 기사 자료**도 분석 대상입니다. 화면 속 배경/하단 배너 광고(ETF·상품)는 무시하고 본 자료만 추출합니다. 예시 화면은 `docs/reference/examples/` 참고.
 

@@ -798,6 +798,161 @@ JSON 객체로만 답하세요:
         return []
 
 
+def _simple_report(
+    settings: dict,
+    prompt: str,
+    fallback_title: str,
+    fallback_body: str,
+    out_dir: Path,
+) -> dict:
+    """noon/night처럼 SIHWANG/NEWS 2분할이 필요 없는 단일 섹션 리포트 공통 골격.
+
+    출력 형식은 `===TITLE===`/`===BODY===`/`===END===` — us/kr의 6구획 형식보다
+    훨씬 가볍다. LLM 실패 시 `fallback_title`/`fallback_body`(호출부가 미리 만든
+    원자료 기반 문구)로 대체해, us/kr과 마찬가지로 LLM이 완전히 막혀도 리포트가
+    반드시 발행된다.
+    """
+    title, body = fallback_title, fallback_body
+    try:
+        text = _call_llm(settings["models"], prompt, max_tokens=6000)
+        sec = _split_marked(text)
+        t = (sec.get("TITLE", "").splitlines() or [""])[0].strip()
+        b = sec.get("BODY", "").strip()
+        if not t or not b:
+            raise ValueError(f"구분선 형식이 아닙니다: {text[:200]}")
+        title, body = t, b
+    except Exception as e:
+        log.error("리포트 생성 실패 → 원자료 기반 열화 리포트로 전환: %s", e)
+
+    body = _strip_search_links(body)
+    data = {"title_keyword": title, "telegram_text": body, "markdown_report": body,
+            "reports": {"sihwang": body, "sihwang_md": body, "news": ""}}
+    (out_dir / "report.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "report.md").write_text(body, encoding="utf-8")
+    log.info("리포트 생성 완료: 키워드=%s", title)
+    return data
+
+
+def generate_noon_report(
+    settings: dict,
+    vision_results: list[dict],
+    transcript: str,
+    kr_indices: list[dict],
+    out_dir: Path,
+) -> dict:
+    """12시 국내 시황(겸손은힘들다 "12시에 만나요") — 요약 + 장중 KR 지수만.
+
+    us/kr과 달리 종목기사 검색·보유종목 체크가 없다(사용자 확정: 12:00~12:10
+    주요 시황·화면캡처·전사 요약만, 장중 KR 지수 현황). 그래서 `generate_report()`
+    전체를 타지 않고 `_simple_report()`로 가볍게 만든다.
+    """
+    disclaimer = settings["report"]["disclaimer"]
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+    material = _material_digest(vision_results)
+    idx_asof = _asof_label(kr_indices)
+    idx_title = f"장중 KR 지수 ({idx_asof})" if idx_asof else "장중 KR 지수"
+    idx_block = "\n".join(_quote_line(q) for q in kr_indices) or "• 조회 실패"
+
+    prompt = f"""당신은 한국 개인투자자를 위한 시황 애널리스트입니다.
+겸손은힘들다 "12시에 만나요"({today}) 12:00~12:10 방송의 화면 캡처와 음성 전사를
+바탕으로 짧은 장중 리포트를 쓰세요.
+
+- 📌 시황 요약: 오전장 흐름과 진행자 코멘트를 3~5줄로. 완곡 표현("~것으로 보입니다")
+  대신 단정형 명사구로, 서술 문단이 아니라 불릿 위주로.
+- 💹 {idx_title}: 아래 검증 시세를 불릿으로 그대로 옮기세요(숫자를 새로 만들지 마세요).
+- 표(`| |`)는 쓰지 마세요. 검색 결과 페이지 URL은 쓰지 마세요.
+- 마지막 줄에 디스클레이머: {disclaimer}
+
+출력 형식:
+===TITLE===
+오늘 12시 방송 핵심 키워드 (파일명용)
+===BODY===
+📌 시황 요약
+...
+💹 {idx_title}
+{idx_block}
+...(디스클레이머로 끝)
+===END===
+
+[장중 KR 지수 검증 시세]
+{json.dumps(kr_indices, ensure_ascii=False)}
+
+[방송 화면 캡처 원문]
+{material}
+
+[음성 전사 (10분 전체)]
+{transcript[:20000]}"""
+
+    banner = "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
+    fallback_body = (
+        f"{banner}📌 12시 국내 시황 ({today})\n{material or '(자료화면 없음)'}\n\n"
+        f"💹 {idx_title}\n{idx_block}\n\n{disclaimer}"
+    )
+    return _simple_report(settings, prompt, "12시시황", fallback_body, out_dir)
+
+
+def generate_night_digest(
+    settings: dict,
+    slots: list[dict],
+    out_dir: Path,
+) -> dict:
+    """22:00~06:00 야간 미장 라이브(오선의 미국 증시 라이브) 8슬롯 종합.
+
+    슬롯 하나하나는 리포트를 만들지 않는다(캡처 5분·저장만) — 06시에 이 함수가
+    `obsidian_archive.read_night_slots()`가 모아온 슬롯을 한 번에 종합해
+    ① 지수 변동 궤적(장초반→장중→마감) ② 주요 이벤트 2~3건 결과를 만든다.
+    """
+    disclaimer = settings["report"]["disclaimer"]
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+
+    def _slot_order(s: dict) -> int:
+        # 22:00~05:59 구간이라 자정을 넘어간다 — 00~05시는 22~23시 다음으로
+        # 취급해야 시간순이 된다 (문자열/숫자 그대로 정렬하면 00이 22보다 앞에 옴)
+        try:
+            h = int(s.get("hour_label", "0"))
+        except ValueError:
+            h = 0
+        return h + 24 if h < 12 else h
+
+    slot_texts = []
+    for s in sorted(slots, key=_slot_order):
+        material = _material_digest(s.get("vision_results") or [])
+        if material:
+            slot_texts.append(f"### {s.get('hour_label', '?')}시\n{material}")
+    slots_block = "\n\n".join(slot_texts) or "(수집된 슬롯 없음)"
+
+    prompt = f"""당신은 한국 개인투자자를 위한 시황 애널리스트입니다.
+"오선의 미국 증시 라이브"({today} 밤~오늘 새벽, 22:00~06:00 KST) 방송을 매시 정각
+5분씩 캡처한 8개 슬롯 결과를 종합해 아침 리포트를 쓰세요. 슬롯은 시간순입니다.
+
+- 📊 지수 변동 궤적: 화면에 나온 주요 지수(다우/나스닥/S&P500)가 장초반→장중→마감
+  구간에서 어떻게 움직였는지 방향(상승/하락/보합) 흐름으로 요약하세요.
+  예: "나스닥: 상승 → 하락 → 보합". 슬롯에 없는 구간은 "확인 불가"로.
+- 📌 주요 이벤트: 슬롯 화면에 나온 미국 일일 주요 이벤트 2~3개를 골라
+  각각 `• **이벤트명** — 결과 한 줄`로. 완곡 표현 금지, 단정형 명사구로.
+- 표는 쓰지 마세요. 검색 결과 페이지 URL은 쓰지 마세요.
+- 마지막 줄에 디스클레이머: {disclaimer}
+
+출력 형식:
+===TITLE===
+오늘 야간 미장 핵심 키워드 (파일명용)
+===BODY===
+📊 지수 변동 궤적
+...
+📌 주요 이벤트
+...
+(디스클레이머로 끝)
+===END===
+
+[시간대별 슬롯 캡처 원문]
+{slots_block}"""
+
+    banner = "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
+    fallback_body = f"{banner}📊 야간 미장 슬롯 원문 ({today})\n{slots_block}\n\n{disclaimer}"
+    return _simple_report(settings, prompt, "야간미장", fallback_body, out_dir)
+
+
 def generate_report(
     settings: dict,
     session: str,

@@ -1,0 +1,110 @@
+# 12시 국내 시황 세션: 겸손은힘들다 "12시에 만나요" (평일 12:00~13:00 데일리)
+# cron은 지연 흡수 버퍼로 11:05 KST 기동 (us/kr과 동일 패턴). 캡처는 12:00~12:10만.
+name: noon-session
+
+on:
+  schedule:
+    - cron: "5 2 * * 1-5"    # KST 월~금 11:05 기동
+  workflow_dispatch:
+    inputs:
+      vod_url:
+        description: "라이브 대신 사용할 VOD URL (테스트/복구용, 비우면 라이브 캡처)"
+        required: false
+        default: ""
+      trim_start:
+        description: "구간 트리밍 시작 (MM:SS, vod_url과 함께만 사용, 사전검토용)"
+        required: false
+        default: ""
+      trim_duration:
+        description: "구간 트리밍 길이 (MM:SS, trim_start와 함께 사용)"
+        required: false
+        default: ""
+      output_tag:
+        description: "artifact 이름 구분용 태그 — 여러 실행 비교 시 유용"
+        required: false
+        default: ""
+      notify:
+        description: "true면 VOD 테스트에서도 텔레그램/카카오로 실제 전송 (기본 무발송)"
+        required: false
+        default: ""
+      archive:
+        description: "true면 VOD 실행 결과도 볼트에 저장 (기본 미저장)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60      # 방송시작 대기(최대 55분) + 10분 캡처 + 분석 여유
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Deno (yt-dlp JS 챌린지 솔버용)
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -r requirements.txt
+
+      - name: Run pipeline (noon)
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: |
+          VOD="${{ github.event.inputs.vod_url }}"
+          TRIM_START="${{ github.event.inputs.trim_start }}"
+          TRIM_DURATION="${{ github.event.inputs.trim_duration }}"
+          if [ -z "$VOD" ]; then
+            python -m threetv.main --session noon
+            exit $?
+          fi
+          FLAGS=""
+          if [ "${{ github.event.inputs.notify }}" != "true" ]; then
+            FLAGS="$FLAGS --skip-notify"
+          fi
+          if [ "${{ github.event.inputs.archive }}" != "true" ]; then
+            FLAGS="$FLAGS --skip-archive"
+          fi
+          if [ -n "$TRIM_START" ]; then
+            FLAGS="$FLAGS --trim-start $TRIM_START --trim-duration $TRIM_DURATION"
+          fi
+          python -m threetv.main --session noon --vod-url "$VOD" $FLAGS
+
+      - name: Print report (debug)
+        if: always()
+        run: |
+          for f in $(find output -name report.md 2>/dev/null); do
+            echo "===== $f ====="
+            head -c 6000 "$f"
+            echo
+          done
+
+      - name: Upload analysis artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: noon-session-${{ github.event.inputs.output_tag || 'run' }}-${{ github.run_id }}
+          path: |
+            output/**/vision_results.json
+            output/**/transcript.txt
+            output/**/report.json
+            output/**/report.md
+          if-no-files-found: ignore
+          retention-days: 7

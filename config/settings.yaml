@@ -38,6 +38,34 @@ sessions:
     # 화면 캡처를 우선한다(report.py 프롬프트에 명시). 15분이라 CPU 전사 ~4분.
     # 비우면 구간 전사도 하지 않는다.
     transcribe_window: ["07:50", "08:05"]
+  noon:                     # 겸손은힘들다 "12시에 만나요" (박시동X이광수X권다영, 평일 데일리)
+    label: "12시 국내 시황"
+    live_url: "https://www.youtube.com/@gyeomsonisnothing/live"
+    # 07:05 뉴스공장도 같은 채널에서 라이브를 하지만 그건 이미 끝나 있을 시각이라
+    # 12:00 폴링 시작으로 충분히 분리된다 (2026-07-28 사용자 확정 채널)
+    poll_from_kst: "12:00"
+    start_kst: "12:00"
+    end_kst: "12:10"        # 사용자 확정: 12:00~12:10 주요 시황만
+    frame_filter: white
+    end_on_host_ad: false
+    host_ad_min_sec: 999999
+    # 사용자 확정: "전사 요약만" — 10분 전체를 전사 (CPU 전사 ~3분)
+    transcribe_window: ["12:00", "12:10"]
+  night:                    # "오선의 미국 증시 라이브" 22:00~06:00 (2026-07-28 사용자 확정 채널)
+    label: "야간 미장 라이브"
+    live_url: "https://www.youtube.com/@futuresnow/live"
+    # ⚠️ GitHub Actions 단일 job은 최대 6시간이라 8시간 연속 녹화가 불가능하다.
+    # 대신 매시 정각 5분만 캡처하는 슬롯 8개 + 06시 종합으로 나눈다
+    # (사용자 요구 "1시간 단위 요약"과도 부합). main.py --slot/--digest 참고.
+    slots_kst: ["22:00", "23:00", "00:00", "01:00", "02:00", "03:00", "04:00", "05:00"]
+    slot_duration_min: 5
+    digest_kst: "06:00"
+    frame_filter: all
+    end_on_host_ad: false
+    host_ad_min_sec: 999999
+    # 무료 티어 할당량(gemini-2.5-flash 20/일)을 밤 8슬롯이 잡아먹지 않도록
+    # 별도 할당량 버킷인 flash-lite로 분리 (2026-07-28 사용자 확정)
+    vision_model: "gemini-3.1-flash-lite"
 
 capture:
   resolution: 480           # OCR에 충분 + 용량 절약

@@ -1,0 +1,105 @@
+# 야간 미장 라이브 슬롯 캡처: "오선의 미국 증시 라이브" 22:00~06:00 KST를
+# 매시 정각 5분씩 8번 캡처한다 — GitHub Actions 단일 job이 최대 6시간이라
+# 8시간 연속 녹화가 불가능해서 쪼갰다(night-digest.yml이 06시에 8슬롯을 종합).
+#
+# 8개 cron 전부 UTC 13~20시(=KST 22~05시) 월~금 — 이 offset(+9h)은 UTC 자정을
+# 넘지 않으므로 8개 슬롯이 전부 같은 UTC 요일에 들어간다(main.py의
+# night_session_date() 참고). 슬롯 시각은 실행 시점의 KST 정시로 스스로 계산한다
+# (어느 cron이 매칭됐는지보다 "지금이 몇 시인지"가 cron 지연에 더 안전하다).
+name: night-slot
+
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"    # KST 22:00
+    - cron: "0 14 * * 1-5"    # KST 23:00
+    - cron: "0 15 * * 1-5"    # KST 00:00 (다음날)
+    - cron: "0 16 * * 1-5"    # KST 01:00
+    - cron: "0 17 * * 1-5"    # KST 02:00
+    - cron: "0 18 * * 1-5"    # KST 03:00
+    - cron: "0 19 * * 1-5"    # KST 04:00
+    - cron: "0 20 * * 1-5"    # KST 05:00
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "테스트용 슬롯 시각 강제 지정 (HH:00, 비우면 현재 KST 정시로 자동 계산)"
+        required: false
+        default: ""
+      vod_url:
+        description: "라이브 대신 사용할 VOD URL (테스트/복구용)"
+        required: false
+        default: ""
+      trim_start:
+        description: "구간 트리밍 시작 (MM:SS, vod_url과 함께만 사용)"
+        required: false
+        default: ""
+      trim_duration:
+        description: "구간 트리밍 길이 (MM:SS, trim_start와 함께 사용)"
+        required: false
+        default: ""
+      archive:
+        description: "true면 VOD 테스트 결과도 볼트에 저장 (기본 미저장)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20      # 5분 캡처 + 비전 분석(flash-lite) 여유
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Deno (yt-dlp JS 챌린지 솔버용)
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -r requirements.txt
+
+      - name: Determine slot
+        id: slot
+        run: |
+          if [ -n "${{ github.event.inputs.slot }}" ]; then
+            echo "hhmm=${{ github.event.inputs.slot }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "hhmm=$(TZ=Asia/Seoul date +%H:00)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run pipeline (night slot)
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          VOD="${{ github.event.inputs.vod_url }}"
+          TRIM_START="${{ github.event.inputs.trim_start }}"
+          TRIM_DURATION="${{ github.event.inputs.trim_duration }}"
+          FLAGS="--session night --slot ${{ steps.slot.outputs.hhmm }} --skip-notify"
+          if [ -n "$VOD" ]; then
+            FLAGS="$FLAGS --vod-url $VOD"
+            if [ -n "$TRIM_START" ]; then
+              FLAGS="$FLAGS --trim-start $TRIM_START --trim-duration $TRIM_DURATION"
+            fi
+          fi
+          if [ "${{ github.event.inputs.archive }}" != "true" ] && [ -n "$VOD" ]; then
+            FLAGS="$FLAGS --skip-archive"
+          fi
+          python -m threetv.main $FLAGS
+
+      - name: Upload analysis artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: night-slot-${{ steps.slot.outputs.hhmm }}-${{ github.run_id }}
+          path: |
+            output/**/vision_results.json
+          if-no-files-found: ignore
+          retention-days: 3

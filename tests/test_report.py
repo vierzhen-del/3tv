@@ -638,3 +638,106 @@ def test_generate_report_strips_search_urls_from_llm_output(tmp_path, monkeypatc
     assert "search.naver.com" not in data["reports"]["news"]
     assert "search.naver.com" not in data["markdown_report"]
     assert "테슬라" in data["reports"]["news"]                  # 텍스트 자체는 남는다
+
+
+# ─────────────────── noon(12시에 만나요) / night(야간 미장) ───────────────────
+
+KR_INTRADAY = [
+    {"name": "KOSPI", "ticker": "^KS11", "market": "KR", "close": 3160.2,
+     "change_pct": 0.31, "direction": "▲", "icon": "📈", "asof": "2026-07-28"},
+    {"name": "KOSDAQ", "ticker": "^KQ11", "market": "KR", "close": 780.5,
+     "change_pct": -0.12, "direction": "▼", "icon": "📉", "asof": "2026-07-28"},
+]
+
+
+def test_noon_report_llm_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
+반도체강세
+===BODY===
+📌 시황 요약
+• 오전장 반도체 강세
+💹 장중 KR 지수
+• KOSPI: 3,160.2 📈 ▲0.31%
+※ 투자 참고용입니다.
+===END===""")
+    data = report_mod.generate_noon_report(
+        SETTINGS, [], "오늘 오전 코스피 상승세입니다.", KR_INTRADAY, tmp_path,
+    )
+    assert data["title_keyword"] == "반도체강세"
+    assert "KOSPI" in data["markdown_report"]
+    assert (tmp_path / "report.md").exists()
+
+
+def test_noon_report_falls_back_without_llm(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    vision = [{"timestamp_sec": 0, "type": "자료화면", "text": "코스피 상승 출발"}]
+    data = report_mod.generate_noon_report(
+        SETTINGS, vision, "", KR_INTRADAY, tmp_path,
+    )
+    assert "AI 요약 없음" in data["markdown_report"]
+    assert "KOSPI" in data["markdown_report"]
+    assert "코스피 상승 출발" in data["markdown_report"]
+
+
+def test_noon_report_no_news_section():
+    """noon은 종목기사 섹션이 없다 (사용자 확정: 시황+장중지수만)."""
+    import inspect
+    sig = inspect.signature(report_mod.generate_noon_report)
+    assert "news_briefing" not in sig.parameters
+
+
+def _slot(hour: str, text: str) -> dict:
+    return {"hour_label": hour, "vision_results": [
+        {"timestamp_sec": 0, "type": "자료화면", "text": text}
+    ]}
+
+
+def test_night_digest_llm_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
+나스닥반등
+===BODY===
+📊 지수 변동 궤적
+• 나스닥: 상승 → 하락 → 보합
+📌 주요 이벤트
+• **엔비디아 실적** — 시간외 급등
+※ 투자 참고용입니다.
+===END===""")
+    slots = [_slot("22", "나스닥 +0.5%"), _slot("23", "나스닥 -0.3%")]
+    data = report_mod.generate_night_digest(SETTINGS, slots, tmp_path)
+    assert data["title_keyword"] == "나스닥반등"
+    assert "지수 변동 궤적" in data["markdown_report"]
+
+
+def test_night_digest_falls_back_without_llm(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    slots = [_slot("22", "나스닥 상승 출발"), _slot("03", "장중 변동성 확대")]
+    data = report_mod.generate_night_digest(SETTINGS, slots, tmp_path)
+    assert "AI 요약 없음" in data["markdown_report"]
+    assert "나스닥 상승 출발" in data["markdown_report"]
+    assert "장중 변동성 확대" in data["markdown_report"]
+
+
+def test_night_digest_orders_slots_chronologically(tmp_path, monkeypatch):
+    """슬롯 저장/전달 순서가 뒤섞여도 시간순으로 정렬해 프롬프트에 넣는다."""
+    captured = {}
+
+    def fake_call_llm(models, prompt, max_tokens=8000):
+        captured["prompt"] = prompt
+        raise RuntimeError("stop before real call")
+
+    monkeypatch.setattr(report_mod, "_call_llm", fake_call_llm)
+    slots = [_slot("23", "23시 내용"), _slot("00", "0시 내용"), _slot("22", "22시 내용")]
+    report_mod.generate_night_digest(SETTINGS, slots, tmp_path)
+    prompt = captured["prompt"]
+    assert prompt.index("22시 내용") < prompt.index("23시 내용") < prompt.index("0시 내용")
+
+
+def test_night_digest_handles_empty_slots(tmp_path, monkeypatch):
+    """슬롯이 하나도 없어도(전부 실패) 리포트는 발행된다."""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 quota")))
+    data = report_mod.generate_night_digest(SETTINGS, [], tmp_path)
+    for key in REQUIRED_KEYS:
+        assert data[key]

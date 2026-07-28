@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import glob as globmod
+import json
 import shutil
 import subprocess
 from datetime import datetime
@@ -185,6 +186,54 @@ def read_us_section_today(obsidian_cfg: dict) -> tuple[str, str]:
         shutil.rmtree(VAULT_TMP, ignore_errors=True)
 
 
+def archive_simple_report(
+    obsidian_cfg: dict, file_prefix: str, keyword: str, markdown_report: str,
+) -> ArchiveResult:
+    """noon/night처럼 **하루 1회만** 발행되는 단일 세션 리포트를 저장한다.
+
+    us/kr의 `archive_report()`는 같은 날짜 파일에 US_MARKER/KR_MARKER로 두 세션을
+    병합하는 구조라 세션이 늘어나면 안 맞는다. noon/night은 병합 상대가 없으므로
+    그날 새 파일 하나를 통째로 쓰는 훨씬 단순한 경로를 쓴다.
+    """
+    vault, reason = _clone_vault(obsidian_cfg)
+    if not vault:
+        return ArchiveResult(ok=False, skipped=reason == DISABLED, reason=reason)
+    try:
+        date = now_kst()
+        ymd = date.strftime("%Y%m%d")
+        month_dir = vault / obsidian_cfg["base_path"] / date.strftime("%Y") / date.strftime("%m")
+        month_dir.mkdir(parents=True, exist_ok=True)
+        safe_kw = "".join(c for c in keyword if c.isalnum() or c in "가-힣_-")[:20]
+        path = month_dir / f"{file_prefix}_{ymd}_{safe_kw or '리포트'}.md"
+        path.write_text(f"# {path.stem}\n\n{markdown_report}\n", encoding="utf-8")
+
+        rel = path.relative_to(vault)
+        subprocess.run(["git", "-C", str(vault), "add", str(rel)],
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "-C", str(vault),
+             "-c", "user.name=3tv-bot", "-c", "user.email=3tv-bot@users.noreply.github.com",
+             "commit", "-m", f"{file_prefix} 리포트 {date:%Y-%m-%d}"],
+            capture_output=True, text=True,
+        )
+        if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+            return ArchiveResult(False, False,
+                                 f"커밋 실패: {commit.stderr.strip()[-200:]}", str(rel))
+        branch = obsidian_cfg.get("vault_branch", "main")
+        push = subprocess.run(["git", "-C", str(vault), "push", "-u", "origin", branch],
+                              capture_output=True, text=True, timeout=120)
+        if push.returncode != 0:
+            return ArchiveResult(False, False,
+                                 f"push 실패: {push.stderr.strip()[-200:]}", str(rel))
+        log.info("옵시디안 볼트 저장 완료: %s", rel)
+        return ArchiveResult(True, False, "", str(rel))
+    except Exception as e:
+        log.error("옵시디안 아카이브 오류(무시하고 계속): %s", e)
+        return ArchiveResult(False, False, f"아카이브 오류: {e}")
+    finally:
+        shutil.rmtree(VAULT_TMP, ignore_errors=True)
+
+
 def archive_report(
     obsidian_cfg: dict,
     session: str,
@@ -276,5 +325,82 @@ def archive_report(
     except Exception as e:
         log.error("옵시디안 아카이브 오류(무시하고 계속): %s", e)
         return ArchiveResult(False, False, f"아카이브 오류: {e}")
+    finally:
+        shutil.rmtree(VAULT_TMP, ignore_errors=True)
+
+
+# ─────────────────── night 세션: 슬롯 캡처 → 06시 종합 ───────────────────
+#
+# GitHub Actions 단일 job은 최대 6시간이라 22:00~06:00(8h) 연속 녹화가 불가능하다.
+# 매시 정각 5분만 캡처하는 슬롯 job 8개가 각자 독립 실행되므로, 로컬 파일로는
+# 서로의 결과를 못 본다 — us→kr이 쓰는 것과 같은 볼트 repo를 슬롯 간 전달 통로로
+# 재사용한다(3protv/ 폴더와 안 겹치게 _night_slots/ 아래에 저장).
+
+NIGHT_SLOT_DIR = "_night_slots"
+
+
+def save_night_slot(
+    obsidian_cfg: dict, date_ymd: str, hour_label: str, payload: dict
+) -> ArchiveResult:
+    """슬롯 1회분(vision_results 등)을 볼트에 저장 — 06시 종합이 나중에 모아 읽는다."""
+    vault, reason = _clone_vault(obsidian_cfg)
+    if not vault:
+        return ArchiveResult(ok=False, skipped=reason == DISABLED, reason=reason)
+    try:
+        slot_dir = vault / NIGHT_SLOT_DIR / date_ymd
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        path = slot_dir / f"{hour_label}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        rel = path.relative_to(vault)
+        subprocess.run(["git", "-C", str(vault), "add", str(rel)],
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "-C", str(vault),
+             "-c", "user.name=3tv-bot", "-c", "user.email=3tv-bot@users.noreply.github.com",
+             "commit", "-m", f"night slot {hour_label} {date_ymd}"],
+            capture_output=True, text=True,
+        )
+        if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+            return ArchiveResult(False, False,
+                                 f"슬롯 커밋 실패: {commit.stderr.strip()[-200:]}", str(rel))
+        branch = obsidian_cfg.get("vault_branch", "main")
+        push = subprocess.run(["git", "-C", str(vault), "push", "-u", "origin", branch],
+                              capture_output=True, text=True, timeout=120)
+        if push.returncode != 0:
+            return ArchiveResult(False, False,
+                                 f"슬롯 push 실패: {push.stderr.strip()[-200:]}", str(rel))
+        log.info("야간 슬롯 저장 완료: %s", rel)
+        return ArchiveResult(True, False, "", str(rel))
+    except Exception as e:
+        log.error("야간 슬롯 저장 오류(무시하고 계속): %s", e)
+        return ArchiveResult(False, False, f"슬롯 저장 오류: {e}")
+    finally:
+        shutil.rmtree(VAULT_TMP, ignore_errors=True)
+
+
+def read_night_slots(obsidian_cfg: dict, date_ymd: str) -> tuple[list[dict], str]:
+    """오늘 저장된 슬롯 전체를 시각순으로 읽는다 → (슬롯 목록, 실패사유).
+
+    슬롯 job이 죽거나 늦어 일부만 있어도 있는 만큼으로 종합을 진행한다 —
+    개별 슬롯 실패로 06시 종합 전체가 무산되면 안 된다.
+    """
+    vault, reason = _clone_vault(obsidian_cfg)
+    if not vault:
+        return [], reason
+    try:
+        slot_dir = vault / NIGHT_SLOT_DIR / date_ymd
+        files = sorted(slot_dir.glob("*.json")) if slot_dir.exists() else []
+        if not files:
+            return [], f"{date_ymd} 야간 슬롯이 볼트에 하나도 없음 (전체 슬롯 job 실패 추정)"
+        slots = []
+        for f in files:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                data["hour_label"] = f.stem
+                slots.append(data)
+            except Exception as e:
+                log.warning("슬롯 파일 파싱 실패(건너뜀) %s: %s", f, e)
+        return slots, ""
     finally:
         shutil.rmtree(VAULT_TMP, ignore_errors=True)

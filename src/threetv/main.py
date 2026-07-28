@@ -22,9 +22,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import traceback
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import market, news, tg_format
@@ -35,8 +37,11 @@ from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
 from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
-                               obsidian_deeplink, read_us_section_today)
-from .report import (drop_etf_stocks, extract_mentions, generate_report,
+                               archive_simple_report, obsidian_deeplink,
+                               read_night_slots, read_us_section_today,
+                               save_night_slot)
+from .report import (drop_etf_stocks, extract_mentions, generate_night_digest,
+                     generate_noon_report, generate_report,
                      us_stocks_in_captures)
 from .transcribe import transcribe
 from .vision import analyze_frames
@@ -44,7 +49,7 @@ from .vision import analyze_frames
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="삼프로TV 라이브 분석 → 데일리 시황 리포트")
-    p.add_argument("--session", required=True, choices=["us", "kr"])
+    p.add_argument("--session", required=True, choices=["us", "kr", "noon", "night"])
     p.add_argument("--vod-url", help="라이브 대신 VOD URL로 실행 (테스트/복구)")
     p.add_argument("--video-file", help="이미 받은 영상 파일로 실행 (캡처 생략)")
     p.add_argument("--trim-start", metavar="MM:SS",
@@ -53,6 +58,10 @@ def parse_args() -> argparse.Namespace:
                     help="VOD 구간 트리밍 길이 (MM:SS/HH:MM:SS/초, --trim-start와 함께 사용)")
     p.add_argument("--skip-notify", action="store_true", help="텔레그램/카카오 전송 생략")
     p.add_argument("--skip-archive", action="store_true", help="옵시디안/노션 저장 생략")
+    p.add_argument("--slot", metavar="HH:MM",
+                    help="--session night 전용: 이 정시만 5분 캡처해 볼트에 저장 (예: 22:00)")
+    p.add_argument("--digest", action="store_true",
+                    help="--session night 전용: 오늘 저장된 슬롯을 모아 종합 리포트 발행")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -60,6 +69,11 @@ def parse_args() -> argparse.Namespace:
         p.error("--trim-start와 --trim-duration은 함께 지정해야 합니다")
     if args.trim_start and not args.vod_url:
         p.error("--trim-start/--trim-duration은 --vod-url과 함께만 사용 가능합니다")
+    if args.session == "night":
+        if bool(args.slot) == bool(args.digest):
+            p.error("--session night는 --slot HH:MM 또는 --digest 중 정확히 하나가 필요합니다")
+    elif args.slot or args.digest:
+        p.error("--slot/--digest는 --session night 전용입니다")
     return args
 
 
@@ -114,11 +128,232 @@ def get_video(args: argparse.Namespace, settings: dict, out_dir: Path) -> Path:
     return capture_live_session(settings, args.session, out_dir)
 
 
+def night_session_date(hour: int, base: datetime | None = None) -> str:
+    """22~23시 슬롯을 00~05시 슬롯과 같은 '야간 세션 날짜'로 묶는다.
+
+    슬롯은 각자 자기 실행 시각의 now_kst()를 쓰므로, 22/23시 슬롯은 아직
+    전날 날짜다. 하지만 06시 종합(digest)이 실행되는 날짜(=다음날 아침, 리포트가
+    "오늘"이라 부르는 날짜)로 맞춰야 8개 슬롯 + digest가 같은 폴더에서 만난다.
+    hour>=12(=22,23시)면 +1일, hour<12(=00~05시, digest의 06시 포함)면 그대로.
+    """
+    base = base or now_kst()
+    if hour >= 12:
+        base = base + timedelta(days=1)
+    return base.strftime("%Y%m%d")
+
+
+def _slot_settings(settings: dict, slot_hhmm: str, duration_min: int) -> dict:
+    """night 세션 설정을 슬롯 시각(HH:MM)에 맞춰 캡처 시작·종료로 오버라이드한 사본.
+
+    capture_live_session()이 settings["sessions"]["night"]의 start_kst/end_kst를
+    읽으므로, 슬롯마다 그 값을 그 슬롯의 실제 시각으로 바꿔치기한다.
+    """
+    h, m = (int(x) for x in slot_hhmm.split(":"))
+    end_total = h * 60 + m + duration_min
+    end_h, end_m = (end_total // 60) % 24, end_total % 60
+    s = copy.deepcopy(settings)
+    ncfg = s["sessions"]["night"]
+    ncfg["poll_from_kst"] = slot_hhmm
+    ncfg["start_kst"] = slot_hhmm
+    ncfg["end_kst"] = f"{end_h:02d}:{end_m:02d}"
+    return s
+
+
+def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
+    """겸손은힘들다 "12시에 만나요" — 12:00~12:10 시황 요약 + 장중 KR 지수.
+
+    us/kr과 달리 종목기사 검색·보유종목 체크가 없다(사용자 확정). 캡처·프레임·
+    비전·전사는 기존 파이프라인 그대로 재사용하고, 리포트만 가벼운 전용
+    generate_noon_report()로 만든다.
+    """
+    session_cfg = settings["sessions"]["noon"]
+    label = session_cfg["label"]
+    log.info("=== 3tv %s 세션 시작 (%s) ===", label, now_kst().strftime("%Y-%m-%d %H:%M"))
+
+    try:
+        video = get_video(args, settings, out_dir)
+    except CaptureError as e:
+        log.error("캡처 실패: %s", e)
+        if not args.skip_notify:
+            send_alert(f"⚠️ 3tv {label} 캡처 실패 ({now_kst():%m/%d %H:%M})\n{e}")
+        return 1
+
+    selected = prepare_frames(video, out_dir, settings["frames"],
+                              mode=session_cfg.get("frame_filter", "white"))
+    all_vision: list[dict] = []
+    if selected:
+        try:
+            all_vision = analyze_frames(
+                selected, settings["models"]["gemini"], out_dir,
+                batch_size=settings["frames"].get("vision_batch_size", 16),
+                max_requests=settings["frames"].get("vision_max_requests", 6),
+                fallback_model=settings["models"].get("gemini_fallback", ""),
+            )
+        except Exception as e:
+            log.error("Gemini 비전 분석 실패(전사만으로 진행): %s", e)
+    vision_results = [r for r in all_vision if r.get("type") == "자료화면"]
+    drop_etf_stocks(vision_results)
+
+    transcript = ""
+    twin = window_offsets(session_cfg.get("start_kst", "12:00"), session_cfg.get("transcribe_window"))
+    if twin:
+        try:
+            transcript = transcribe(video, out_dir, settings["models"]["whisper"],
+                                    start_sec=twin[0], dur_sec=twin[1])
+        except Exception as e:
+            log.error("전사 실패(화면 캡처만으로 진행): %s", e)
+
+    kr_indices = [q for q in market.fetch_indices(settings["market"]["indices"])
+                 if q.get("market") == "KR"]
+
+    report = generate_noon_report(settings, vision_results, transcript, kr_indices, out_dir)
+
+    if args.skip_archive:
+        archived = ArchiveResult(ok=False, skipped=True, reason=DISABLED)
+    else:
+        archived = archive_simple_report(
+            settings["obsidian"], "3protv정오", report["title_keyword"],
+            tg_format.to_obsidian(report["markdown_report"]),
+        )
+
+    header = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']} [{label}]"
+    body = f"**{header}**\n\n{report['telegram_text']}"
+    if args.skip_notify:
+        log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
+    else:
+        send_telegram(tg_format.to_telegram_html(body), settings["telegram"]["max_message_len"], html=True)
+        if settings.get("kakao", {}).get("enabled", True):
+            send_kakao_memo(tg_format.to_plain(body))
+
+    if not archived.ok and not archived.skipped:
+        log.error("볼트 저장 실패: %s", archived.reason)
+        if not args.skip_notify:
+            send_alert(f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n사유: {archived.reason}\n"
+                       "· 텔레그램/카카오 리포트는 정상 발송됐습니다.")
+        return 1
+
+    log.info("=== %s 세션 완료 ===", label)
+    return 0
+
+
+def run_night_slot(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
+    """야간 미장 라이브 슬롯 1회분 — 5분 캡처 + 비전 분석 → 볼트에 저장만 하고 끝난다.
+
+    리포트도, 텔레그램 발송도 여기선 없다. 8개 슬롯이 각자 독립 job으로 실행되며,
+    06시 종합(run_night_digest)이 이 결과들을 모아 리포트 하나로 합친다.
+    슬롯 하나가 실패해도(방송 미시작 등) 나머지 슬롯·종합은 영향받지 않는다 —
+    그래서 실패해도 텔레그램 경고를 보내지 않는다(8번의 소음을 피함).
+    """
+    session_cfg = settings["sessions"]["night"]
+    slot_settings = _slot_settings(settings, args.slot, session_cfg.get("slot_duration_min", 5))
+    hour_label = args.slot.split(":")[0]
+    log.info("=== 3tv 야간 슬롯 %s 시작 (%s) ===", args.slot, now_kst().strftime("%Y-%m-%d %H:%M"))
+
+    try:
+        video = get_video(args, slot_settings, out_dir)
+    except CaptureError as e:
+        log.warning("야간 슬롯(%s) 캡처 실패(다른 슬롯엔 영향 없음): %s", args.slot, e)
+        return 1
+
+    selected = prepare_frames(video, out_dir, settings["frames"],
+                              mode=session_cfg.get("frame_filter", "all"))
+    vision_results: list[dict] = []
+    if selected:
+        try:
+            all_vision = analyze_frames(
+                selected, session_cfg.get("vision_model") or settings["models"]["gemini"], out_dir,
+                batch_size=settings["frames"].get("vision_batch_size", 16),
+                max_requests=settings["frames"].get("vision_max_requests", 6),
+                fallback_model="",  # 이미 별도(무료) 버킷이라 추가 폴백 불필요
+            )
+            vision_results = [r for r in all_vision if r.get("type") == "자료화면"]
+            drop_etf_stocks(vision_results)
+        except Exception as e:
+            log.error("야간 슬롯(%s) 비전 분석 실패: %s", args.slot, e)
+
+    if args.skip_archive:
+        log.info("--skip-archive: 슬롯 저장 생략 (결과는 %s 에 저장됨)", out_dir)
+        return 0
+
+    date_ymd = night_session_date(int(hour_label))
+    payload = {"vision_results": vision_results, "timestamp_kst": now_kst().isoformat()}
+    result = save_night_slot(settings["obsidian"], date_ymd, hour_label, payload)
+    if not result.ok and not result.skipped:
+        log.error("야간 슬롯(%s) 저장 실패: %s", args.slot, result.reason)
+        return 1
+    log.info("=== 야간 슬롯 %s 완료 ===", args.slot)
+    return 0
+
+
+def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
+    """06시 — 오늘 밤 저장된 슬롯 8개를 모아 종합 리포트 1건을 발행한다."""
+    session_cfg = settings["sessions"]["night"]
+    label = session_cfg["label"]
+    n_slots = len(session_cfg.get("slots_kst", [])) or 8
+    date_ymd = night_session_date(6)
+    log.info("=== 3tv %s 종합 시작 (%s) ===", label, now_kst().strftime("%Y-%m-%d %H:%M"))
+
+    slots, reason = read_night_slots(settings["obsidian"], date_ymd)
+    if not slots:
+        log.error("야간 슬롯을 하나도 읽지 못함: %s", reason)
+        if not args.skip_notify:
+            send_alert(
+                f"⚠️ 3tv {label} 종합 실패 ({now_kst():%m/%d %H:%M})\n사유: {reason}\n"
+                "슬롯 job이 전부 실패했거나 GH_PAT 문제일 수 있습니다."
+            )
+        return 1
+    if len(slots) < n_slots:
+        log.warning("야간 슬롯 %d/%d개만 수집됨(일부 슬롯 job 실패 추정) — 있는 만큼으로 종합",
+                   len(slots), n_slots)
+
+    report = generate_night_digest(settings, slots, out_dir)
+
+    if args.skip_archive:
+        archived = ArchiveResult(ok=False, skipped=True, reason=DISABLED)
+    else:
+        archived = archive_simple_report(
+            settings["obsidian"], "3protv야간", report["title_keyword"],
+            tg_format.to_obsidian(report["markdown_report"]),
+        )
+
+    header = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']} [{label}]"
+    body = f"**{header}**\n\n{report['telegram_text']}"
+    if len(slots) < n_slots:
+        body += f"\n\n⚠️ 슬롯 {len(slots)}/{n_slots}개만 수집됨 — 일부 시간대 캡처가 누락됐을 수 있습니다."
+
+    if args.skip_notify:
+        log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
+    else:
+        send_telegram(tg_format.to_telegram_html(body), settings["telegram"]["max_message_len"], html=True)
+        if settings.get("kakao", {}).get("enabled", True):
+            send_kakao_memo(tg_format.to_plain(body))
+
+    if not archived.ok and not archived.skipped:
+        log.error("볼트 저장 실패: %s", archived.reason)
+        if not args.skip_notify:
+            send_alert(f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n사유: {archived.reason}\n"
+                       "· 텔레그램/카카오 리포트는 정상 발송됐습니다.")
+        return 1
+
+    log.info("=== %s 종합 완료 ===", label)
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     settings = load_settings()
     session = args.session
     # 트리밍 테스트는 전체구간 결과와 겹치지 않게 별도 폴더(<session>_trim)에 저장
     out_dir = output_dir(session, tag="trim" if args.trim_start else None)
+
+    # noon/night은 us/kr과 리포트 구조·아카이브 방식이 달라 전용 경로로 분기한다
+    # (noon: 종목기사 없는 가벼운 리포트 / night: 슬롯 캡처+저장만 또는 8슬롯 종합)
+    if session == "noon":
+        return run_noon(args, settings, out_dir)
+    if session == "night":
+        if args.digest:
+            return run_night_digest(args, settings, out_dir)
+        return run_night_slot(args, settings, out_dir)
+
     label = settings["sessions"][session]["label"]
     log.info("=== 3tv %s 세션 시작 (%s) ===", label, now_kst().strftime("%Y-%m-%d %H:%M"))
 
