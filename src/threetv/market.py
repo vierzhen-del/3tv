@@ -299,16 +299,53 @@ def _recent_biz_range(days: int = 10) -> tuple[str, str]:
     return (end - timedelta(days=days)).strftime("%Y%m%d"), end.strftime("%Y%m%d")
 
 
-def kr_investor_flows(market: str = "KOSPI") -> list[dict]:
-    """전일 수급주체별 순매수 (기관·외국인·개인 등).
+@functools.lru_cache(maxsize=4)
+def last_biz_days(n: int = 2) -> list[str]:
+    """가장 최근 영업일부터 n개를 최신순으로 (['20260728', '20260727']).
 
-    반환: [{"investor": "외국인", "net": 1234.5}] — 단위 억원, 순매수 큰 순.
-    pykrx 실패·컬럼 변경에도 리포트가 죽지 않도록 전부 best-effort.
+    ⚠️ 이게 없어서 수급이 **10일 누적으로 나가던 버그**가 있었다 — pykrx의 수급
+    함수는 (start, end) 구간 **합계**를 주는데 `_recent_biz_range()`가 10일 창을
+    넘겨 "전일 수급"이라는 이름으로 10영업일치가 실렸다(2026-07-29 실측:
+    외국인 -50,944억원 = -5조원, 개인 +67,539억원 — 하루치일 수 없는 규모).
     """
     stock = _pykrx_stock()
     if stock is None:
         return []
-    start, end = _recent_biz_range()
+    days: list[str] = []
+    cur = datetime.now(KST)
+    for _ in range(n * 3 + 10):        # 연휴를 넉넉히 흡수
+        if len(days) >= n:
+            break
+        try:
+            d = stock.get_nearest_business_day_in_a_week(
+                cur.strftime("%Y%m%d"), prev=True)
+        except Exception as e:
+            log.warning("영업일 조회 실패: %s", e)
+            return days
+        if not d:
+            break
+        if d not in days:
+            days.append(d)
+        cur = datetime.strptime(d, "%Y%m%d") - timedelta(days=1)
+    return days
+
+
+def kr_investor_flows(market: str = "KOSPI", day: str | None = None) -> list[dict]:
+    """**하루치** 수급주체별 순매수 (기관·외국인·개인 등).
+
+    반환: [{"investor": "외국인", "net": 1234.5}] — 단위 억원, 순매수 큰 순.
+    day를 안 주면 가장 최근 영업일. pykrx 실패·컬럼 변경에도 리포트가 죽지 않도록
+    전부 best-effort.
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return []
+    if day is None:
+        days = last_biz_days(1)
+        if not days:
+            return []
+        day = days[0]
+    start = end = day
     try:
         df = stock.get_market_trading_value_by_investor(start, end, market)
         if df is None or not len(df):
@@ -327,7 +364,7 @@ def kr_investor_flows(market: str = "KOSPI") -> list[dict]:
                 continue
             rows.append({"investor": str(name).strip(), "net": round(v / 1e8, 1)})
         rows.sort(key=lambda r: r["net"], reverse=True)
-        log.info("전일 수급주체 동향: %d개 주체 (%s)", len(rows), market)
+        log.info("%s 수급주체 동향: %d개 주체 (%s)", day, len(rows), market)
         return rows
     except Exception as e:
         log.warning("수급 동향 조회 실패: %s", e)
@@ -335,15 +372,20 @@ def kr_investor_flows(market: str = "KOSPI") -> list[dict]:
 
 
 def kr_top_net_purchases(investor: str = "외국인", n: int = 10,
-                         market: str = "KOSPI") -> dict:
-    """수급주체 기준 순매수 상위 n / 순매도 상위 n 종목.
+                         market: str = "KOSPI", day: str | None = None) -> dict:
+    """수급주체 기준 **하루치** 순매수 상위 n / 순매도 상위 n 종목.
 
     반환: {"investor":..., "buy":[{name, net}], "sell":[{name, net}]} (단위 억원)
     """
     stock = _pykrx_stock()
     if stock is None:
         return {}
-    start, end = _recent_biz_range()
+    if day is None:
+        days = last_biz_days(1)
+        if not days:
+            return {}
+        day = days[0]
+    start = end = day
     try:
         df = stock.get_market_net_purchases_of_equities(start, end, market, investor)
         if df is None or not len(df):
@@ -373,15 +415,37 @@ def kr_top_net_purchases(investor: str = "외국인", n: int = 10,
         return {}
 
 
-def kr_etf_top_movers(n: int = 10) -> dict:
-    """전일 ETF 등락 상위/하위 (거래대금 있는 종목 기준).
+@functools.lru_cache(maxsize=512)
+def etf_name(ticker: str) -> str:
+    """ETF 종목코드 → 종목명. 실패하면 코드를 그대로 돌려준다.
 
-    반환: {"up":[{name, pct}], "down":[{name, pct}]}
+    ⚠️ `get_etf_price_change_by_ticker`는 **종목명 컬럼을 주지 않는다** — 그래서
+    리포트에 "0197X0 (29.67%)"처럼 코드가 그대로 실렸다(2026-07-29 텔레그램 실측).
+    사람이 읽을 수 없으니 여기서 이름을 채운다.
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return ticker
+    try:
+        return (stock.get_etf_ticker_name(ticker) or "").strip() or ticker
+    except Exception:
+        return ticker
+
+
+def kr_etf_top_movers(n: int = 10, day: str | None = None) -> dict:
+    """**하루치** ETF 등락 상위/하위 (거래대금 있는 종목 기준).
+
+    반환: {"up":[{name, ticker, pct}], "down":[...]}
     """
     stock = _pykrx_stock()
     if stock is None:
         return {}
-    start, end = _recent_biz_range()
+    if day is None:
+        days = last_biz_days(1)
+        if not days:
+            return {}
+        day = days[0]
+    start = end = day
     try:
         df = stock.get_etf_price_change_by_ticker(start, end)
         if df is None or not len(df):
@@ -398,8 +462,9 @@ def kr_etf_top_movers(n: int = 10) -> dict:
                 continue
             if not math.isfinite(v) or v == 0:
                 continue
-            nm = str(row.get("종목명") or idx).strip()
-            items.append({"name": nm, "pct": round(v, 2)})
+            code = str(idx).strip()
+            nm = str(row.get("종목명") or "").strip() or etf_name(code)
+            items.append({"name": nm, "ticker": code, "pct": round(v, 2)})
         items.sort(key=lambda r: r["pct"], reverse=True)
         result = {"up": items[:n], "down": items[-n:][::-1]}
         log.info("ETF 등락 상위 %d / 하위 %d", len(result["up"]), len(result["down"]))
@@ -617,6 +682,43 @@ def etf_pdf_diff(today: list[dict], prev: list[dict], top: int = 5,
     }
 
 
+# 수급 요약에서 앞세울 3대 주체 — 나머지(연기금·투신·사모 등)는 '그외'로 접는다
+MAIN_INVESTORS = ("개인", "외국인", "기관합계")
+
+
+def kr_flow_summary(market: str = "KOSPI") -> dict:
+    """개인·외국인·기관 순매수와 **전일대비 증감**.
+
+    반환: {"date":..., "prev_date":..., "main":[{investor, net, delta}],
+           "others":[{investor, net, delta}]}  (단위 억원)
+
+    delta = 당일 순매수 − 직전 영업일 순매수. 부호가 아니라 '흐름이 어느 쪽으로
+    바뀌었나'를 보여주는 값이다 — 예컨대 외국인이 이틀 내리 순매도여도 매도 규모가
+    줄었다면 delta는 +가 된다.
+    """
+    days = last_biz_days(2)
+    if not days:
+        return {}
+    today = kr_investor_flows(market, day=days[0])
+    if not today:
+        return {}
+    prev = kr_investor_flows(market, day=days[1]) if len(days) > 1 else []
+    pmap = {r["investor"]: r["net"] for r in prev}
+
+    rows = [{"investor": r["investor"], "net": r["net"],
+             "delta": round(r["net"] - pmap[r["investor"]], 1)
+             if r["investor"] in pmap else None}
+            for r in today]
+    main = [r for r in rows if r["investor"] in MAIN_INVESTORS]
+    main.sort(key=lambda r: MAIN_INVESTORS.index(r["investor"]))
+    others = [r for r in rows if r["investor"] not in MAIN_INVESTORS]
+    others.sort(key=lambda r: r["net"], reverse=True)
+    log.info("수급 요약 %s (전일 %s): 주요 %d주체", days[0],
+             days[1] if len(days) > 1 else "-", len(main))
+    return {"date": days[0], "prev_date": days[1] if len(days) > 1 else "",
+            "main": main, "others": others}
+
+
 def fetch_flows(cfg: dict | None = None) -> dict:
     """6번 섹션용 수급 데이터 묶음 (전부 best-effort — 실패해도 빈 dict)."""
     cfg = cfg or {}
@@ -624,10 +726,13 @@ def fetch_flows(cfg: dict | None = None) -> dict:
         return {}
     n = int(cfg.get("top_n", 10))
     investor = cfg.get("investor", "외국인")
+    summary = kr_flow_summary()
+    day = summary.get("date") or None
     return {
-        "investors": kr_investor_flows(),
-        "top": kr_top_net_purchases(investor=investor, n=n),
-        "etf": kr_etf_top_movers(n=n),
+        "summary": summary,
+        "investors": kr_investor_flows(day=day),
+        "top": kr_top_net_purchases(investor=investor, n=n, day=day),
+        "etf": kr_etf_top_movers(n=n, day=day),
     }
 
 

@@ -443,29 +443,54 @@ def _is_quote_table(text: str, stocks: list | None) -> bool:
     return len(stocks or []) >= 12
 
 
+def _delta_str(d: float | None) -> str:
+    """전일대비 증감 — 없으면 빈 문자열."""
+    if d is None:
+        return ""
+    return f" (전일比 {'+' if d > 0 else '−'}{abs(d):,.0f})"
+
+
 def _flow_lines(flows: dict | None) -> str:
-    """수급 데이터를 사람이 읽는 줄로 (LLM 요약 실패 시에도 원자료가 남게)."""
+    """수급 데이터를 사람이 읽는 줄로 (LLM 요약 실패 시에도 원자료가 남게).
+
+    종목이 여러 개인 목록은 **한 줄에 하나씩** 쓴다 — 쉼표로 이어붙이면 텔레그램에서
+    통째로 한 문단이 돼 읽을 수가 없다(2026-07-29 실물 스크린샷 지적).
+    """
     if not flows:
         return ""
     parts: list[str] = []
-    inv = flows.get("investors") or []
-    if inv:
-        parts.append("• 전일 수급주체 순매수(억원): " + ", ".join(
-            f"{r['investor']} {r['net']:+,.0f}" for r in inv[:8]))
+
+    # ① 개인·외국인·기관 요약 (전일대비 증감 포함) — 가장 먼저 본다
+    summary = flows.get("summary") or {}
+    if summary.get("main"):
+        d = summary.get("date", "")
+        head = f"• 수급 요약 ({d[4:6]}/{d[6:8]} 순매수, 억원)" if len(d) == 8 \
+            else "• 수급 요약 (순매수, 억원)"
+        parts.append(head)
+        for r in summary["main"]:
+            parts.append(f"  · {r['investor']}: {r['net']:+,.0f}{_delta_str(r.get('delta'))}")
+        others = summary.get("others") or []
+        if others:
+            parts.append("  · 그외: " + ", ".join(
+                f"{r['investor']} {r['net']:+,.0f}" for r in others[:6]))
+    else:
+        inv = flows.get("investors") or []
+        if inv:
+            parts.append("• 수급주체 순매수(억원)")
+            for r in inv[:8]:
+                parts.append(f"  · {r['investor']}: {r['net']:+,.0f}")
+
     top = flows.get("top") or {}
-    if top.get("buy"):
-        parts.append(f"• {top.get('investor','')} 순매수 TOP: " + ", ".join(
-            f"{r['name']}({r['net']:+,.0f})" for r in top["buy"][:10]))
-    if top.get("sell"):
-        parts.append(f"• {top.get('investor','')} 순매도 TOP: " + ", ".join(
-            f"{r['name']}({r['net']:+,.0f})" for r in top["sell"][:10]))
+    for key, label in (("buy", "순매수"), ("sell", "순매도")):
+        if top.get(key):
+            parts.append(f"• {top.get('investor','')} {label} TOP (억원)")
+            parts += [f"  · {r['name']}: {r['net']:+,.0f}" for r in top[key][:10]]
+
     etf = flows.get("etf") or {}
-    if etf.get("up"):
-        parts.append("• ETF 상승 TOP: " + ", ".join(
-            f"{r['name']}({r['pct']:+.2f}%)" for r in etf["up"][:10]))
-    if etf.get("down"):
-        parts.append("• ETF 하락 TOP: " + ", ".join(
-            f"{r['name']}({r['pct']:+.2f}%)" for r in etf["down"][:10]))
+    for key, label in (("up", "상승"), ("down", "하락")):
+        if etf.get(key):
+            parts.append(f"• ETF {label} TOP")
+            parts += [f"  · {r['name']}: {r['pct']:+.2f}%" for r in etf[key][:10]]
     return "\n".join(parts)
 
 
@@ -1101,9 +1126,14 @@ def generate_report(
    (✅·체크표시는 쓰지 마세요 — 방송 언급 표시는 📡 하나로 통일합니다.)
 
 5) 🔎 **수급 · 변동성**:
-   - **전일 수급주체 수급동향**: [수급 데이터]의 investors(기관·외국인·개인 순매수, 억원)
+   - **수급주체 요약**: [수급 데이터]의 summary를 **개인 / 외국인 / 기관합계 3줄로
+     먼저** 쓰고, 각 줄에 delta가 있으면 `(전일比 ±N)`을 붙이세요. 연기금·투신·사모
+     등은 그 아래 "그외" 한 줄로 묶습니다. summary.date가 그 수급의 기준일입니다 —
+     **날짜를 임의로 '전일'이라고 바꿔 쓰지 마세요.**
    - **순매수 top10 / 순매도 top10**: [수급 데이터]의 top
-   - **ETF 등락 상위/하위**: [수급 데이터]의 etf
+   - **ETF 등락 상위/하위**: [수급 데이터]의 etf. **name(종목명)을 쓰고 ticker는
+     쓰지 마세요** — 코드만 나열하면 사람이 못 읽습니다.
+   - 위 목록들은 **한 줄에 한 종목**씩 쓰세요 (쉼표로 이어붙이지 말 것)
    - **VIX (미장·국장)**: 미장은 검증 시세의 VIX, 국장은 VKOSPI(코스피 변동성지수)가
      검증 시세에 있으면 사용하고 없으면 "확인 불가"로 적으세요
    - 수급 데이터가 비어 있으면 그 항목만 "조회 실패"로 적고 넘어가세요 (숫자 창작 금지)
