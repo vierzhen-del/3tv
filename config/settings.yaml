@@ -45,12 +45,14 @@ sessions:
     # 12:00 폴링 시작으로 충분히 분리된다 (2026-07-28 사용자 확정 채널)
     poll_from_kst: "12:00"
     start_kst: "12:00"
-    end_kst: "12:10"        # 사용자 확정: 12:00~12:10 주요 시황만
+    # 사용자 확정(2026-07-28, 실제 방송 스크린샷): 오프닝 이후 "정오의 Money 뉴스"
+    # 고정 코너(코스피·코스닥·환율 수치 + 헤드라인 불릿)가 8~12분대에 나온다.
+    # 10분으로는 잘릴 수 있어 20분까지 넉넉히 캡처(12:10→12:20).
+    end_kst: "12:20"
     frame_filter: white
     end_on_host_ad: false
     host_ad_min_sec: 999999
-    # 사용자 확정: "전사 요약만" — 10분 전체를 전사 (CPU 전사 ~3분)
-    transcribe_window: ["12:00", "12:10"]
+    transcribe_window: ["12:00", "12:20"]
   night:                    # "오선의 미국 증시 라이브" 22:00~06:00 (2026-07-28 사용자 확정 채널)
     label: "야간 미장 라이브"
     live_url: "https://www.youtube.com/@futuresnow/live"
