@@ -127,18 +127,21 @@ def news_note_name(date: datetime) -> str:
     return f"3protv기사_{date.strftime('%Y%m%d')}"
 
 
-def obsidian_deeplink(obsidian_cfg: dict, date: datetime | None = None) -> str:
+def obsidian_deeplink(
+    obsidian_cfg: dict, date: datetime | None = None, file_prefix: str = "3protv오늘",
+) -> str:
     """탭S9/S26에서 탭하면 옵시디안이 열리는 딥링크.
 
     파일명에는 그날 키워드가 붙어 전송 시점엔 확정되지 않으므로(us 세션이 만든
     파일을 kr이 재사용) **검색 딥링크**를 쓴다 — 날짜만으로 항상 맞는다.
+    `file_prefix`로 noon(`3protv정오`)·night(`3protv야간`) 노트도 같은 방식으로 연결한다.
     """
     vault = (obsidian_cfg or {}).get("vault_name", "").strip()
     if not vault:
         return ""
     ymd = (date or now_kst()).strftime("%Y%m%d")
     return (f"obsidian://search?vault={quote(vault)}"
-            f"&query={quote(f'3protv오늘_{ymd}')}")
+            f"&query={quote(f'{file_prefix}_{ymd}')}")
 
 
 def _frontmatter(

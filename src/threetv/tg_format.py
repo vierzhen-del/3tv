@@ -15,7 +15,7 @@ import re
 FOLD_OPEN = "<<<FOLD:"      # 예: <<<FOLD:미장 종목 기사 (12건)>>>
 FOLD_CLOSE = "<<<END>>>"
 
-_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(((?:https?|obsidian)://[^\s)]+)\)")
 _BOLD2_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
 _BOLD1_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
 _FENCE_RE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.S)

@@ -21,6 +21,16 @@ def test_link_shows_title_only():
     assert "https://search.naver.com" not in html.split("<a href=", 1)[1].split(">", 1)[1]
 
 
+def test_obsidian_deeplink_becomes_clickable():
+    """2026-07-28 실물 확인: obsidian:// 링크가 하이퍼링크로 안 바뀌고 [텍스트](URL)가
+    그대로 노출됐다 — _LINK_RE가 http(s)만 매칭해서였다."""
+    md = "🗂 [옵시디안에서 열기](obsidian://search?vault=vierzhen_home&query=3protv%EC%95%BC%EA%B0%84_20260728)"
+    html = tg_format.to_telegram_html(md)
+    assert '<a href="obsidian://search?vault=vierzhen_home&amp;query=' in html
+    assert "옵시디안에서 열기</a>" in html
+    assert "[옵시디안에서 열기](" not in html
+
+
 def test_bold_and_header():
     html = tg_format.to_telegram_html("## 요약\n**06:14** 나스닥 강세")
     assert "<b>요약</b>" in html

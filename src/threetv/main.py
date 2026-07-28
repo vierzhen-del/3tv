@@ -218,6 +218,9 @@ def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
 
     header = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']} [{label}]"
     body = f"**{header}**\n\n{report['telegram_text']}"
+    deeplink = obsidian_deeplink(settings.get("obsidian", {}), file_prefix="3protv정오")
+    if deeplink and archived.ok:
+        body += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
     else:
@@ -320,6 +323,9 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
     body = f"**{header}**\n\n{report['telegram_text']}"
     if len(slots) < n_slots:
         body += f"\n\n⚠️ 슬롯 {len(slots)}/{n_slots}개만 수집됨 — 일부 시간대 캡처가 누락됐을 수 있습니다."
+    deeplink = obsidian_deeplink(settings.get("obsidian", {}), file_prefix="3protv야간")
+    if deeplink and archived.ok:
+        body += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
 
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
