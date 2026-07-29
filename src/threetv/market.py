@@ -576,14 +576,18 @@ def etf_pdf(ticker: str, date_ymd: str) -> list[dict]:
     # 426030·0015B0·0223R0의 미국 주식은 전부 0.00, 국내주식만 담는 441800은 정상).
     # 금액이나 시가총액이 있으면 거기서 환산하고, 그것마저 없으면 **비중을 None으로
     # 비운다** — 0.00%를 그대로 찍으면 "비중이 0인 종목"이라는 없는 사실을 알리게 된다.
-    if sum(r["weight"] or 0 for r in rows) < 1:
-        # ⚠️ 총액이 0보다 크다는 것만으론 부족하다. PDF에는 원화예금 행이 섞여 있고
-        # 해외 주식 행은 금액이 0이라, 예금 한 줄이 총액을 독차지해 개별 종목이 전부
-        # 0.00%로 환산된다(2026-07-28 0223R0 실측). **과반 행이 실제 값을 가질 때만**
-        # 환산하고, 아니면 비중을 비운다.
-        half = max(1, len(rows) // 2)
-        base = next((k for k in ("amount", "mktcap")
-                     if sum(1 for r in rows if (r.get(k) or 0) > 0) >= half), None)
+    # ⚠️ "합계가 0보다 크다"로 판단하면 안 된다. PDF에는 원화예금 같은 행이 섞여
+    # 있어서 그 한 줄만 값을 갖고 나머지 종목은 0인 경우가 있다 — 합계는 통과하지만
+    # 정작 종목 비중은 전부 0.00%가 된다(2026-07-28 0223R0 금액, 2026-07-29 472150
+    # 비중에서 실측: 삼성전자가 22.84%→0.00%인데 8주를 매수한 모순이 나왔다).
+    # 그래서 **과반 행이 실제 값을 가지는지**로 판단한다.
+    half = max(1, len(rows) // 2)
+
+    def _usable(key: str) -> bool:
+        return sum(1 for r in rows if (r.get(key) or 0) > 0) >= half
+
+    if not _usable("weight"):
+        base = next((k for k in ("amount", "mktcap") if _usable(k)), None)
         if base:
             total = sum(r.get(base) or 0 for r in rows)
             for r in rows:

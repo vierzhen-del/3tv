@@ -266,3 +266,46 @@ def test_weight_still_derived_when_most_rows_have_amounts(monkeypatch):
     monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
     rows = market.etf_pdf("441800", "20260728")
     assert [round(r["weight"], 0) for r in rows] == [30.0, 30.0, 30.0, 10.0]
+
+
+def test_partial_weight_column_is_rejected(monkeypatch):
+    """472150 실측: 비중이 소수 행(예금·옵션)에만 있고 종목은 0이면 합계는 1을
+    넘지만 종목 비중은 전부 0.00%가 된다 — '삼성전자 +8주인데 비중 22.84%p 하락'
+    같은 모순이 나온다. 과반 기준으로 걸러야 한다."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["삼성전자", "SK하이닉스", "SK", "원화예금"],
+         "계약수": [10.0, 5.0, 2.0, 1.0],
+         "금액": [0, 0, 0, 0],
+         "시가총액": [0, 0, 0, 0],
+         "비중": [0.0, 0.0, 0.0, 30.0]},        # 예금만 비중을 갖고 있다
+        index=["005930", "000660", "034730", "KRW"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("472150", "20260729")
+    assert all(r["weight"] is None for r in rows)
+
+
+def test_majority_weight_column_is_kept(monkeypatch):
+    """과반이 정상 비중이면 그대로 신뢰한다."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"구성종목명": ["삼성전자", "SK하이닉스", "원화예금"],
+         "계약수": [10.0, 5.0, 1.0],
+         "금액": [0, 0, 0], "시가총액": [0, 0, 0],
+         "비중": [40.0, 35.0, 0.0]},
+        index=["005930", "000660", "KRW"])
+
+    class _Stub:
+        def get_etf_portfolio_deposit_file(self, *a, **k):
+            return df
+
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: _Stub())
+    rows = market.etf_pdf("441800", "20260729")
+    assert [r["weight"] for r in rows] == [40.0, 35.0, 0.0]
