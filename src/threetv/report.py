@@ -527,11 +527,23 @@ def _capture_blocks(
             briefing_map.setdefault(q, []).append(n)
     blocks: list[str] = []
     skipped_tables = 0
+    seen_text: set[str] = set()
+    skipped_dupes = 0
     for r in vision_results:
         clock = _clock(base_kst, r.get("timestamp_sec", 0))
         text = (r.get("text") or "").strip()
         stocks = [s for s in (r.get("stocks") or []) if s.get("name")]
         names = [str(s["name"]).strip() for s in stocks]
+
+        # 같은 화면이 여러 프레임에 걸쳐 잡히면 리포트에 똑같은 줄이 반복된다
+        # (2026-07-29 us 실측: Russell 2000·Micron 헤드라인이 각각 2번씩 실렸다).
+        # 공백만 다른 동일 텍스트는 처음 것만 남긴다.
+        key = " ".join(text.split())
+        if key and key in seen_text:
+            skipped_dupes += 1
+            continue
+        if key:
+            seen_text.add(key)
 
         # 8시 전후 구간의 개별 종목 시세판은 분석 대상이 아니다
         if _in_window(clock, verbatim_window) and _is_quote_table(text, stocks):
@@ -572,6 +584,8 @@ def _capture_blocks(
     if skipped_tables:
         log.info("8시 전후 개별 종목 시세판 %d장 제외 (흰 배경 슬라이드만 분석)",
                  skipped_tables)
+    if skipped_dupes:
+        log.info("동일 화면 캡처 %d장 중복 제거", skipped_dupes)
     return "\n".join(blocks)
 
 
@@ -1110,6 +1124,14 @@ def generate_report(
 
 3) 🖼 **8시 전후 캡처화면 정리** — [방송 화면 캡처] 블록을 그대로 활용해 캡처당 2줄
    (`**HH:MM** · 종목` / `🔗 링크`). 시각은 `08:00`처럼 짧게.
+   - ⚠️ **영문 캡처는 반드시 한국어로 옮겨 쓰세요.** 미장 화면은 블룸버그·
+     트레이딩뷰 등 영문 헤드라인이라 원문 그대로 실으면 읽히지 않습니다
+     (2026-07-29 실측: "Micron's stock sinks toward worst monthly drop in 11
+     years as China fears escalate"가 영문 그대로 나갔습니다).
+     · **수치·티커·기업명은 원문 그대로** 두고 서술만 한국어로:
+       `Micron 166.84 −11.34% · 중국 리스크 확산에 11년래 최악의 월간 낙폭`
+     · 잘려 있는 문장(`…`)은 **추측해서 채우지 마세요** — 확인된 부분까지만.
+     · 한국어로 이미 적힌 캡처는 그대로 둡니다.
    - `화면 원문`으로 표시된 캡처(07:45~08:10 흰 배경 요약 슬라이드)는 **요약하지 말고
      화면의 줄 구성을 그대로** 옮기세요. 항목 순서·구분자(/)·수치를 원문대로 유지.
    - ⚠️ 이 구간은 **흰 배경 그림·슬라이드만** 대상입니다. 개별 종목 시세판
@@ -1175,6 +1197,11 @@ def generate_report(
         "kr": "이 방송은 당일 한국장 개장 전 전망입니다. 1번의 국내장 전망과 3번(8시 전후 화면)을 "
               "특히 두껍게 쓰고, 미국 시황과의 연결 고리는 아래 '오늘 미국 세션 리포트'를 참고하세요.",
     }[session]
+    # 3번 섹션 제목은 kr 기준("8시 전후")으로 적혀 있어 us(05:55~06:40)엔 안 맞는다
+    # — 05:55 캡처에 "8시 전후"라는 제목이 붙어 나갔다(2026-07-29 실측).
+    if session == "us":
+        common_order = common_order.replace(
+            "8시 전후 캡처화면 정리", "미국장 캡처화면 정리")
     session_goal = f"{session_focus}\n\n{common_order}"
 
     us_ctx = f"\n\n[오늘 미국 세션 리포트 (참고)]\n{us_context_md[:8000]}" if us_context_md else ""

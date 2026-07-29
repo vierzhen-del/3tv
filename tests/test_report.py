@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -796,3 +798,57 @@ def test_noon_report_fallback_does_not_leak_internal_tags(tmp_path, monkeypatch)
     data = report_mod.generate_noon_report(SETTINGS, vision, "", KR_INTRADAY, tmp_path)
     assert "<종목표시" not in data["markdown_report"]
     assert "코스피 3,160.2" in data["markdown_report"]
+
+
+# ── 2026-07-29 us 리포트 실물 지적: 영문 원문·중복·섹션 제목 ──
+
+def test_capture_blocks_drops_duplicate_screens():
+    """같은 화면이 여러 프레임에 잡히면 리포트에 같은 줄이 반복된다
+    (us 실측: Russell 2000·Micron 헤드라인이 각각 2번씩 실렸다)."""
+    dup = "Micron's stock sinks toward worst monthly drop in 11 years"
+    vision = [
+        {"timestamp_sec": 0, "type": "자료화면", "text": dup},
+        {"timestamp_sec": 20, "type": "자료화면", "text": dup},
+        {"timestamp_sec": 40, "type": "자료화면", "text": "  ".join(dup.split())},
+        {"timestamp_sec": 60, "type": "자료화면", "text": "Nasdaq 100 heads for 10% drop"},
+    ]
+    out = report_mod._capture_blocks(vision, [], "05:55")
+    assert out.count("Micron") == 1
+    assert "Nasdaq 100" in out
+
+
+def test_capture_blocks_keeps_distinct_screens():
+    vision = [
+        {"timestamp_sec": 0, "type": "자료화면", "text": "화면 A"},
+        {"timestamp_sec": 20, "type": "자료화면", "text": "화면 B"},
+    ]
+    out = report_mod._capture_blocks(vision, [], "05:55")
+    assert "화면 A" in out and "화면 B" in out
+
+
+def test_us_prompt_asks_for_korean_translation(monkeypatch):
+    """미장 캡처는 영문이라 번역 지시가 프롬프트에 있어야 한다."""
+    captured = {}
+
+    def fake(models, prompt, max_tokens=8000):
+        captured["p"] = prompt
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(report_mod, "_call_llm", fake)
+    _generate(Path(tempfile.mkdtemp()), session="us", transcript="")
+    p = captured["p"]
+    assert "영문 캡처는 반드시 한국어로" in p
+    assert "미국장 캡처화면 정리" in p       # us엔 '8시 전후' 제목이 안 맞는다
+    assert "8시 전후 캡처화면 정리" not in p
+
+
+def test_kr_prompt_keeps_its_own_section_title(monkeypatch):
+    captured = {}
+
+    def fake(models, prompt, max_tokens=8000):
+        captured["p"] = prompt
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(report_mod, "_call_llm", fake)
+    _generate(Path(tempfile.mkdtemp()), session="kr", transcript="")
+    assert "8시 전후 캡처화면 정리" in captured["p"]
