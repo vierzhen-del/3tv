@@ -9,6 +9,7 @@ VOD: 테스트 및 캡처 실패 복구용 — 영상 URL을 직접 지정해 �
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import time
@@ -139,6 +140,50 @@ def download_vod(
         raise CaptureError(f"VOD 다운로드 실패: {(proc.stderr or '')[-800:]}")
     log.info("다운로드 완료: %.1f MB", out_file.stat().st_size / 1e6)
     return out_file
+
+
+def find_recent_vod(channel_live_url: str, max_candidates: int = 5) -> tuple[str, int | None]:
+    """라이브 창을 놓쳤을 때 쓰는 다시보기 폴백(2026-08-01, noon 세션).
+
+    `channel_live_url`은 세션의 `.../@handle/live` 형태 — 핸들만 뽑아
+    `.../streams`(지난 방송 목록) 탭을 대신 본다. 데일리 라이브 채널이라
+    가장 최근 항목이 곧 오늘 방송이라는 전제다.
+    반환: (영상 URL, 실제 방송 시작 유닉스 타임스탬프 | None).
+    두 번째 값은 `release_timestamp`가 없는 영상(비공개 처리·메타데이터
+    누락 등)이면 None — 호출 측이 오프셋을 추정치로 대체해야 한다.
+    """
+    base = channel_live_url.rsplit("/", 1)[0]   # '.../@handle/live' → '.../@handle'
+    streams_url = f"{base}/streams"
+    cookies = _cookies_file()
+
+    cmd = _ytdlp_base(cookies) + [
+        "--flat-playlist", "-J", "--playlist-end", str(max_candidates), streams_url,
+    ]
+    try:
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, check=True
+        ).stdout
+        entries = json.loads(out).get("entries") or []
+    except subprocess.CalledProcessError as e:
+        raise CaptureError(f"다시보기 목록 조회 실패: {(e.stderr or '')[-500:]}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        raise CaptureError(f"다시보기 목록 조회 실패: {e}")
+    if not entries or not entries[0].get("id"):
+        raise CaptureError("다시보기 목록이 비어 있음")
+
+    video_url = f"https://www.youtube.com/watch?v={entries[0]['id']}"
+
+    release_ts: int | None = None
+    try:
+        info_cmd = _ytdlp_base(cookies) + ["-J", video_url]
+        info = json.loads(subprocess.run(
+            info_cmd, capture_output=True, text=True, timeout=60, check=True
+        ).stdout)
+        release_ts = info.get("release_timestamp") or info.get("timestamp")
+    except Exception as e:
+        log.warning("다시보기 시작 시각 확인 실패(오프셋은 추정치로 대체): %s", e)
+
+    return video_url, release_ts
 
 
 def capture_live_session(settings: dict, session: str, out_dir: Path) -> Path:

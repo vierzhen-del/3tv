@@ -3,10 +3,11 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from threetv import main as main_mod
+from threetv.common import parse_kst_time
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -118,6 +119,57 @@ def test_broadcast_end_kst_for_early_morning_slot_is_same_day():
     nominal = datetime(2026, 7, 29, 2, 0, tzinfo=KST)
     end = main_mod._broadcast_end_kst(SETTINGS["sessions"]["night"], nominal)
     assert end == datetime(2026, 7, 29, 6, 0, tzinfo=KST)
+
+
+# ── noon VOD 폴백 (2026-08-01, B 섹션) ──────────────────────────────────
+
+def _noon_cfg():
+    return {
+        "live_url": "https://www.youtube.com/@gyeomsonisnothing/live",
+        "start_kst": "12:00", "end_kst": "12:20",
+    }
+
+
+def test_noon_vod_fallback_computes_offset_from_release_ts(monkeypatch, tmp_path):
+    """방송이 12:00보다 2분30초 일찍 시작했으면 그만큼 건너뛰고 받는다."""
+    target = parse_kst_time("12:00")
+    release_dt = target - timedelta(minutes=2, seconds=30)
+    monkeypatch.setattr(main_mod, "find_recent_vod",
+                        lambda live_url: ("https://y/watch?v=abc", int(release_dt.timestamp())))
+    captured = {}
+
+    def fake_download(url, out_file, resolution, start_sec, duration_sec):
+        captured.update(url=url, start_sec=start_sec, duration_sec=duration_sec)
+        return out_file
+    monkeypatch.setattr(main_mod, "download_vod", fake_download)
+
+    main_mod._noon_vod_fallback({"capture": {"resolution": 480}}, _noon_cfg(), tmp_path)
+    assert captured["url"] == "https://y/watch?v=abc"
+    assert captured["start_sec"] == 150
+    assert captured["duration_sec"] == 20 * 60
+
+
+def test_noon_vod_fallback_clamps_negative_offset_to_zero():
+    """방송이 12:00 이후에 시작한 것으로 나오면(비정상) 오프셋은 0으로 클램프."""
+    target = parse_kst_time("12:00")
+    release_dt = target + timedelta(minutes=5)
+    assert max(0, int((target - release_dt).total_seconds())) == 0
+
+
+def test_noon_vod_fallback_missing_release_ts_uses_default_window(monkeypatch, tmp_path):
+    """release_timestamp를 못 구하면 12:00 정각 시작 가정 + 25분 여유로 받는다."""
+    monkeypatch.setattr(main_mod, "find_recent_vod",
+                        lambda live_url: ("https://y/watch?v=xyz", None))
+    captured = {}
+
+    def fake_download(url, out_file, resolution, start_sec, duration_sec):
+        captured.update(start_sec=start_sec, duration_sec=duration_sec)
+        return out_file
+    monkeypatch.setattr(main_mod, "download_vod", fake_download)
+
+    main_mod._noon_vod_fallback({"capture": {"resolution": 480}}, _noon_cfg(), tmp_path)
+    assert captured["start_sec"] == 0
+    assert captured["duration_sec"] == 25 * 60
 
 
 def test_parse_args_night_requires_slot_or_digest():
