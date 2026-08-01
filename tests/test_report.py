@@ -852,3 +852,108 @@ def test_kr_prompt_keeps_its_own_section_title(monkeypatch):
     monkeypatch.setattr(report_mod, "_call_llm", fake)
     _generate(Path(tempfile.mkdtemp()), session="kr", transcript="")
     assert "8시 전후 캡처화면 정리" in captured["p"]
+
+
+# ── 2026-08-01 가독성 개편: 접기 마커 + 링크 정규화 ──
+
+def test_flow_detail_mark_gets_folded():
+    text = """===TITLE===
+키워드
+===SIHWANG===
+5) 🔎 수급 · 변동성
+· 개인: +100
+· 외국인: -50
+---수급상세---
+· 연기금: +10
+· 순매수 top10 여기
+===END==="""
+    out = report_mod._parse_sections(text)
+    md = out["markdown_report"]
+    assert "· 개인: +100" in md
+    assert report_mod.tg_format.FOLD_OPEN in md
+    assert "· 연기금: +10" not in md.split(report_mod.tg_format.FOLD_OPEN)[0]
+
+
+def test_us_ctx_mark_gets_folded_for_kr():
+    text = """===TITLE===
+키워드
+===SIHWANG===
+국내장 전망 내용입니다.
+---미장참고---
+미국장 정리 내용입니다.
+===END==="""
+    out = report_mod._parse_sections(text)
+    md = out["markdown_report"]
+    assert "국내장 전망 내용입니다." in md
+    before_fold = md.split(report_mod.tg_format.FOLD_OPEN)[0]
+    assert "미국장 정리 내용입니다." not in before_fold
+
+
+def test_us_ctx_mark_mid_document_keeps_later_sections():
+    """2026-08-01 로컬 재현 버그: `---미장참고---`가 1번 섹션 중간에 있으면
+    "마커 뒤 전부 접기"로 구현했을 때 2)~5) 섹션이 통째로 접기 블록 안에
+    빨려 들어가거나(오접기) 사라졌다(유실). 다음 번호 헤딩(`2)` 등) 앞에서
+    접기를 끊고, 그 뒤 섹션은 원래 위치에 그대로 남아야 한다."""
+    text = """===TITLE===
+키워드
+===SIHWANG===
+1) 📌 3protv 요약
+- 국내장 전망: 코스피 강보합
+- 미국장: 나스닥 강세
+---미장참고---
+전일 다우 +0.4%, 나스닥 +0.9%
+
+2) 💹 주요 지수
+- 코스피 3120 (+0.4%)
+
+3) 🖼 8시 전후 캡처화면 정리
+- 07:55 창신메모리 이슈
+
+5) 📊 수급·변동성
+- 개인 -500억 / 외국인 +300억
+===END==="""
+    out = report_mod._parse_sections(text)
+    md = out["markdown_report"]
+    # 접기 블록 안: 마커 다음 내용만
+    assert tg_format.FOLD_OPEN in md
+    fold_body = md.split(tg_format.FOLD_OPEN, 1)[1].split(tg_format.FOLD_CLOSE, 1)[0]
+    assert "다우 +0.4%" in fold_body
+    # 2)~5) 섹션은 접기 블록 밖(뒤)에 그대로 남아 있어야 한다 — 유실도, 오접기도 안 됨
+    after_fold = md.split(tg_format.FOLD_CLOSE, 1)[1]
+    assert "2) 💹 주요 지수" in after_fold
+    assert "3) 🖼 8시 전후 캡처화면 정리" in after_fold
+    assert "5) 📊 수급·변동성" in after_fold
+    assert "코스피 3120" in after_fold
+    assert "창신메모리" in after_fold
+    assert "개인 -500억" in after_fold
+
+
+def test_capture_link_rows_are_collected_and_folded():
+    text = """===TITLE===
+키워드
+===SIHWANG===
+**05:55**
+Bloom Energy 실적 발표
+🔗 [Bloom Energy](https://a.b/1)
+**05:59**
+Micron 실적 우려
+🔗 [Micron](https://a.b/2)
+===END==="""
+    out = report_mod._parse_sections(text)
+    md = out["markdown_report"]
+    before_fold = md.split(tg_format.FOLD_OPEN)[0]
+    assert "🔗 " not in before_fold          # 본문에는 링크 줄이 안 남는다
+    assert md.count("🔗 ") == 2              # 접기 블록 안에는 그대로 2개
+    assert "Bloom Energy 실적 발표" in md
+    assert "Micron 실적 우려" in md
+
+
+def test_no_fold_markers_leaves_text_unchanged():
+    """마커가 없는 정상 출력은 그대로 통과해야 한다(회귀 방지)."""
+    text = """===TITLE===
+키워드
+===SIHWANG===
+평범한 시황 내용
+===END==="""
+    out = report_mod._parse_sections(text)
+    assert out["markdown_report"] == "평범한 시황 내용"

@@ -15,7 +15,15 @@ import re
 FOLD_OPEN = "<<<FOLD:"      # 예: <<<FOLD:미장 종목 기사 (12건)>>>
 FOLD_CLOSE = "<<<END>>>"
 
-_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(((?:https?|obsidian)://[^\s)]+)\)")
+# 링크 표시 텍스트는 **대괄호를 한 겹 품을 수 있다** — 언론사 제목이
+# "[운용 & Now] 'TIGER 미국필라델피아반도체나스닥 ETF' 순자산 6조원 돌파"처럼
+# 대괄호로 시작하는 경우가 흔하다. 예전 `[^\]\n]+`는 제목 안의 첫 `]`에서 끊겨
+# 매칭에 실패했고, 그러면 변환이 통째로 안 돼 **마크다운 원문이 그대로 텔레그램에
+# 노출**됐다(2026-08-01 실물 확인: `🔗 [[운용 & Now] ...](https://www.ebn.co.kr/...)`).
+# LLM도 링크를 직접 만들기 때문에 생성부만 손봐선 막히지 않아 정규식에서 처리한다.
+_LINK_RE = re.compile(
+    r"\[((?:[^\[\]\n]|\[[^\[\]\n]*\])+)\]\(((?:https?|obsidian)://[^\s)]+)\)"
+)
 _BOLD2_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
 _BOLD1_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
 _FENCE_RE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.S)
@@ -79,11 +87,27 @@ def fold(title: str, body: str) -> str:
 
 
 def to_plain(md: str) -> str:
-    """접기 마커만 걷어낸 평문 마크다운 (카카오 등 접기를 모르는 채널용)."""
+    """접기 마커·마크다운·HTML 서식을 전부 벗긴 평문 (카카오 등 서식을 모르는 채널용).
+
+    카카오 나에게 보내기는 마크다운도 HTML도 렌더링하지 않는다 — `**제목**`이나
+    `<b>제목</b>`이 글자 그대로 노출된다(2026-08-01 실물 확인: us/kr 리포트의
+    `**📌 3protv오늘...**`과 ETF 리뷰의 `<b>ETF 포트폴리오 리뷰</b>` 둘 다 카카오
+    메시지에 기호가 그대로 보였다). 대부분의 리포트는 마크다운이지만 ETF 리뷰처럼
+    처음부터 HTML로 만들어지는 것도 있어(`generate_etf_review`) 두 서식 다 벗긴다.
+    """
     def _cb(m: re.Match) -> str:
         title = m.group(1).strip()
-        return f"▼ {title}\n{m.group(2).strip()}" if title else m.group(2).strip()
-    return _FOLD_RE.sub(_cb, md or "")
+        body = to_plain(m.group(2).strip())    # 접기 안쪽도 재귀적으로 정리
+        return f"▼ {title}\n{body}" if title else body
+    out = _FOLD_RE.sub(_cb, md or "")
+    out = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", out)   # [글자](url) → 글자 (url)
+    out = _BOLD2_RE.sub(lambda m: m.group(1), out)     # **굵게**
+    out = _BOLD1_RE.sub(lambda m: m.group(1), out)     # *기울임*
+    out = _HEAD_RE.sub(lambda m: m.group(1).strip(), out)   # ## 제목
+    out = re.sub(r"<a href=\"([^\"]+)\">(.*?)</a>", r"\2 (\1)", out, flags=re.S)
+    out = re.sub(r"<[^>]+>", "", out)
+    return (out.replace("&lt;", "<").replace("&gt;", ">")
+               .replace("&quot;", '"').replace("&amp;", "&"))
 
 
 def to_obsidian(md: str) -> str:

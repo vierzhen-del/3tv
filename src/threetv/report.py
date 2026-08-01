@@ -202,6 +202,63 @@ _MARK_RE = re.compile(r"===([A-Z]+)===")
 # ===NEWS=== 안에서 '주요종목'과 '그 외'를 가르는 표식. 그 외는 접기 블록으로 내린다.
 NEWS_REST_MARK = "---기타---"
 
+# 시황 본문에서 "여기부터는 접어라"를 표시하는 마커들. LLM이 마커만 찍고 코드가
+# 접는 구조 — LLM에게 `<<<FOLD:...>>>` 문법을 직접 시키면 형식이 자주 깨진다.
+FLOW_DETAIL_MARK = "---수급상세---"     # 개인·외국인·기관 요약 아래의 세부 주체/TOP10
+US_CTX_MARK = "---미장참고---"          # kr 리포트에 딸려오는 미국장 내용
+
+
+# 공용 프롬프트의 번호 섹션 헤딩("1) 📌 ...", "2) 💹 ..." 등) — `_fold_after`가
+# 다음 섹션 시작 전에서 멈추는 경계로 쓴다.
+_SECTION_HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\d+\)\s", re.M)
+
+
+def _fold_after(md: str, mark: str, title: str) -> str:
+    """`mark` 다음 줄부터 **다음 번호 섹션 시작 전까지**를 접기 블록으로 내린다.
+
+    ⚠️ 마커 뒤 전부를 무조건 접으면 안 된다 — `---미장참고---`는 1번 섹션
+    중간(국내장 전망 다음)에 오는데, 그 뒤에 2)~5) 섹션이 더 있다. "전부 접기"로
+    구현했더니 3)·5) 섹션 전체가 미국장 접기 블록 안으로 빨려 들어갔다
+    (2026-08-01 로컬 재현: 캡처 정리·수급 섹션이 통째로 사라짐). 다음 번호 헤딩을
+    만나면 그 앞에서 접기를 끊고, 헤딩부터는 원래 자리에 그대로 남긴다.
+    마커가 파일 끝부분(예: 5번 섹션의 `---수급상세---`)에 있으면 다음 헤딩이
+    없으니 기존처럼 끝까지 접는다.
+    """
+    if mark not in md:
+        return md
+    head, rest = md.split(mark, 1)
+    m = _SECTION_HEAD_RE.search(rest)
+    tail = ""
+    if m:
+        tail, rest = rest[m.start():].strip(), rest[:m.start()]
+    rest = rest.strip()
+    if not rest:
+        out = head.strip()
+    else:
+        out = f"{head.strip()}\n\n{tg_format.fold(title, rest)}"
+    if tail:
+        out = f"{out}\n\n{tail}"
+    return out
+
+
+_LINK_ROW_RE = re.compile(r"^\s*🔗 .*$", re.M)
+
+
+def _fold_link_rows(md: str, title: str = "캡처 화면 관련 기사 링크") -> str:
+    """본문에 흩어진 `🔗 A · B · C` 링크 나열 줄을 걷어 **맨 뒤 접기 블록 하나**로 모은다.
+
+    캡처 정리 섹션은 화면 내용(주요 내용) 사이사이에 링크 줄이 끼어 있어 읽는 흐름이
+    끊긴다(2026-08-01 실물 지적). 링크는 버리지 않고 한곳에 모아 접는다.
+    LLM 출력·열화 출력 어디에나 적용되도록 **후처리**로 구현했다 — 프롬프트 지시에
+    기대면 지키지 않는 날 그대로 나간다.
+    """
+    rows = [m.group(0).strip() for m in _LINK_ROW_RE.finditer(md)]
+    if len(rows) < 2:          # 1줄뿐이면 접는 게 오히려 번거롭다
+        return md
+    body = _LINK_ROW_RE.sub("", md)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return f"{body}\n\n{tg_format.fold(f'{title} ({len(rows)}건)', chr(10).join(rows))}"
+
 
 def _split_marked(text: str) -> dict[str, str]:
     """`===NAME===` 구분선으로 나뉜 섹션들을 {NAME: 본문}으로."""
@@ -294,6 +351,13 @@ def _parse_sections(text: str) -> dict:
     sihwang = sec.get("SIHWANG") or sec.get("MARKDOWN") or ""
     if "TITLE" not in sec or not sihwang:
         raise ValueError(f"구분선 형식이 아닙니다: {text[:200]}")
+
+    # 가독성 후처리 (2026-08-01 요청) — 마커 기반 접기는 LLM이 마커를 안 찍으면
+    # 원문 그대로 통과하고, 링크 줄 접기는 마커 없이 후처리라 항상 적용된다.
+    sihwang = _fold_after(sihwang, FLOW_DETAIL_MARK,
+                          "수급 상세 (그외 주체 · TOP10 · ETF 등락)")
+    sihwang = _fold_after(sihwang, US_CTX_MARK, "미국장 참고")
+    sihwang = _fold_link_rows(sihwang)
 
     news_md = _fold_news_rest(sec.get("NEWS", ""))
     daily = sec.get("DAILY", "").strip()
@@ -458,9 +522,11 @@ def _flow_lines(flows: dict | None) -> str:
     """
     if not flows:
         return ""
-    parts: list[str] = []
+    parts: list[str] = []      # 항상 펼쳐 보이는 개요
+    detail: list[str] = []     # 접어 두는 상세
 
-    # ① 개인·외국인·기관 요약 (전일대비 증감 포함) — 가장 먼저 본다
+    # ① 개인·외국인·기관 요약 (전일대비 증감 포함) — 가장 먼저 본다.
+    #    나머지 주체(연기금·투신·사모…)와 TOP10은 상세로 내린다(2026-08-01 요청).
     summary = flows.get("summary") or {}
     if summary.get("main"):
         d = summary.get("date", "")
@@ -471,8 +537,9 @@ def _flow_lines(flows: dict | None) -> str:
             parts.append(f"  · {r['investor']}: {r['net']:+,.0f}{_delta_str(r.get('delta'))}")
         others = summary.get("others") or []
         if others:
-            parts.append("  · 그외: " + ", ".join(
-                f"{r['investor']} {r['net']:+,.0f}" for r in others[:6]))
+            detail.append("• 그외 수급주체 (억원)")
+            detail += [f"  · {r['investor']}: {r['net']:+,.0f}{_delta_str(r.get('delta'))}"
+                       for r in others]
     else:
         inv = flows.get("investors") or []
         if inv:
@@ -483,15 +550,20 @@ def _flow_lines(flows: dict | None) -> str:
     top = flows.get("top") or {}
     for key, label in (("buy", "순매수"), ("sell", "순매도")):
         if top.get(key):
-            parts.append(f"• {top.get('investor','')} {label} TOP (억원)")
-            parts += [f"  · {r['name']}: {r['net']:+,.0f}" for r in top[key][:10]]
+            detail.append(f"• {top.get('investor','')} {label} TOP (억원)")
+            detail += [f"  · {r['name']}: {r['net']:+,.0f}" for r in top[key][:10]]
 
     etf = flows.get("etf") or {}
     for key, label in (("up", "상승"), ("down", "하락")):
         if etf.get(key):
-            parts.append(f"• ETF {label} TOP")
-            parts += [f"  · {r['name']}: {r['pct']:+.2f}%" for r in etf[key][:10]]
-    return "\n".join(parts)
+            detail.append(f"• ETF {label} TOP")
+            detail += [f"  · {r['name']}: {r['pct']:+.2f}%" for r in etf[key][:10]]
+
+    out = "\n".join(parts)
+    if detail:
+        out += "\n\n" + tg_format.fold("수급 상세 (그외 주체 · TOP10 · ETF 등락)",
+                                       "\n".join(detail))
+    return out
 
 
 def _capture_blocks(
@@ -760,7 +832,9 @@ def _fallback_report(
     hold_title = f"💼 보유종목 시세 ({hold_asof})" if hold_asof else "💼 보유종목 시세"
     sihwang_parts = [banner, f"\n### {idx_title}\n{idx_block}"]
     if captures:
-        sihwang_parts.append(f"\n### 🖼 방송 화면 캡처 (시각 · 종목 · 관련 기사)\n{captures}")
+        # 링크 나열 줄은 화면 내용 사이에 끼면 읽는 흐름을 끊는다 — 뒤로 모아 접는다
+        sihwang_parts.append(
+            f"\n### 🖼 방송 화면 캡처 (시각 · 종목 · 관련 기사)\n{_fold_link_rows(captures)}")
     else:
         sihwang_parts.append(
             "\n### 🖼 방송 화면 캡처\n"
@@ -1104,12 +1178,15 @@ def generate_report(
     # 한 건에 다 담으면 기사 목록이 본문을 잠식해 읽히지 않았다(실측 스크린샷).
     common_order = """### 리포트 ① 시황 (===SIHWANG===) — 아래 1~5 순서와 번호를 그대로
 
-1) 📌 **3protv 요약** — 방송 핵심을 압축하고, 이어서 **미국장 정리**와 **오늘 국내장 전망**을
-   각각 소제목으로 씁니다.
-   - 미국장: 지수 흐름·주도 섹터·매크로 이슈
+1) 📌 **3protv 요약** — 방송 핵심을 압축하고, 이어서 **오늘 국내장 전망**과 **미국장 정리**를
+   각각 소제목으로 씁니다(이 순서로 — 국내장 먼저, 미국장은 참고자료라 뒤).
    - 국내장 전망: KOSPI·KOSDAQ 예상 방향과 근거, 반도체(삼성전자·SK하이닉스)에 미치는 영향,
      환율·외국인 수급 관점. **코스피 야간선물**은 방송 화면값 우선 → 없으면 EWY로 갈음(대용 명시)
      → 둘 다 없으면 "확인 불가"(추측 금지)
+   - 미국장: 지수 흐름·주도 섹터·매크로 이슈. **kr 세션이면 이 소제목 바로 앞 줄에
+     `---미장참고---` 한 줄만 단독으로 넣으세요**(다른 글자 없이) — 국내장 전망이
+     먼저 읽히도록 미국장 부분을 접습니다. us 세션은 이 마커를 넣지 마세요
+     (미국장이 본문 주제입니다).
    - 방송에서 진행자가 국내장 전망을 언급했다면 그 내용을 우선 반영
 
 2) 💹 **주요 지표 전일대비 현황** — 종가 기준일은 섹션 제목에 한 번만
@@ -1124,6 +1201,10 @@ def generate_report(
 
 3) 🖼 **8시 전후 캡처화면 정리** — [방송 화면 캡처] 블록을 그대로 활용해 캡처당 2줄
    (`**HH:MM** · 종목` / `🔗 링크`). 시각은 `08:00`처럼 짧게.
+   - 링크 줄은 `🔗 `로 시작하는 **한 줄**로 쓰세요(코드가 이 줄들을 모아 접습니다).
+   - 기사 제목을 그대로 붙이지 말고 **키워드로 줄이세요** — `[운용 & Now] 'TIGER
+     미국필라델피아반도체나스닥 ETF' 순자산 6조원 돌파...` → `[TIGER 미국반도체 ETF
+     순자산 6조 돌파](url)`. 20자 안팎이면 충분합니다.
    - ⚠️ **영문 캡처는 반드시 한국어로 옮겨 쓰세요.** 미장 화면은 블룸버그·
      트레이딩뷰 등 영문 헤드라인이라 원문 그대로 실으면 읽히지 않습니다
      (2026-07-29 실측: "Micron's stock sinks toward worst monthly drop in 11
@@ -1149,10 +1230,13 @@ def generate_report(
 
 5) 🔎 **수급 · 변동성**:
    - **수급주체 요약**: [수급 데이터]의 summary를 **개인 / 외국인 / 기관합계 3줄로
-     먼저** 쓰고, 각 줄에 delta가 있으면 `(전일比 ±N)`을 붙이세요. 연기금·투신·사모
-     등은 그 아래 "그외" 한 줄로 묶습니다. summary.date가 그 수급의 기준일입니다 —
-     **날짜를 임의로 '전일'이라고 바꿔 쓰지 마세요.**
-   - **순매수 top10 / 순매도 top10**: [수급 데이터]의 top
+     먼저** 쓰고, 각 줄에 delta가 있으면 `(전일比 ±N)`을 붙이세요. summary.date가
+     그 수급의 기준일입니다 — **날짜를 임의로 '전일'이라고 바꿔 쓰지 마세요.**
+   - 위 3줄 바로 다음 줄에 **`---수급상세---`를 단독으로** 넣고, 그 아래에
+     ① 연기금·투신·사모 등 "그외" 주체 ② 순매수 top10 / 순매도 top10
+     ③ ETF 등락 상위/하위를 이어 쓰세요 — 코드가 이 마커 아래 전부를 접습니다.
+     핵심 3주체만 바로 보이고 나머지는 눌러야 펼쳐지게 하려는 목적이니
+     마커 위치를 반드시 지키세요.
    - **ETF 등락 상위/하위**: [수급 데이터]의 etf. **name(종목명)을 그대로 쓰고
      ticker는 쓰지 마세요** — 코드만 나열하면 사람이 못 읽습니다. 단 name이 코드
      형태(예: "0197X0")로 와 있으면 **그대로 두세요 — 이름을 추측해 채우지 마세요.**
