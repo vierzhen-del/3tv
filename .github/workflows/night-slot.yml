@@ -4,8 +4,14 @@
 #
 # 8개 cron 전부 UTC 13~20시(=KST 22~05시) 월~금 — 이 offset(+9h)은 UTC 자정을
 # 넘지 않으므로 8개 슬롯이 전부 같은 UTC 요일에 들어간다(main.py의
-# night_session_date() 참고). 슬롯 시각은 실행 시점의 KST 정시로 스스로 계산한다
-# (어느 cron이 매칭됐는지보다 "지금이 몇 시인지"가 cron 지연에 더 안전하다).
+# night_session_date() 참고).
+#
+# ⚠️ 슬롯은 "지금이 몇 시인지"가 아니라 **어느 cron이 매칭됐는지**
+# (`github.event.schedule`)로 결정한다(2026-08-01). "지금 몇 시"로 계산하던
+# 예전 방식은 cron이 밀리면(무료 티어 최대 3h38m) 없는 슬롯을 만들어냈다 —
+# 05:00 cron이 06:15에 시작되면 `slots_kst`에 없는 "06:00" 유령 슬롯이 돼
+# main.py의 _slot_settings/night_session_date와 어긋났다(실전 8슬롯 3일 연속
+# 실패의 원인 중 하나). cron 문자열은 8개뿐이라 매핑표로 고정한다.
 name: night-slot
 
 on:
@@ -67,10 +73,23 @@ jobs:
         id: slot
         run: |
           if [ -n "${{ github.event.inputs.slot }}" ]; then
-            echo "hhmm=${{ github.event.inputs.slot }}" >> "$GITHUB_OUTPUT"
+            HH="${{ github.event.inputs.slot }}"
+            HH="${HH%%:*}"
           else
-            echo "hhmm=$(TZ=Asia/Seoul date +%H:00)" >> "$GITHUB_OUTPUT"
+            case "${{ github.event.schedule }}" in
+              "0 13 * * 1-5") HH="22" ;;
+              "0 14 * * 1-5") HH="23" ;;
+              "0 15 * * 1-5") HH="00" ;;
+              "0 16 * * 1-5") HH="01" ;;
+              "0 17 * * 1-5") HH="02" ;;
+              "0 18 * * 1-5") HH="03" ;;
+              "0 19 * * 1-5") HH="04" ;;
+              "0 20 * * 1-5") HH="05" ;;
+              *) HH="$(TZ=Asia/Seoul date +%H)" ;;   # 수동 dispatch(슬롯 미입력) 등 폴백
+            esac
           fi
+          echo "hh=${HH}" >> "$GITHUB_OUTPUT"
+          echo "hhmm=${HH}:00" >> "$GITHUB_OUTPUT"
 
       - name: Run pipeline (night slot)
         env:
@@ -98,7 +117,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: night-slot-${{ steps.slot.outputs.hhmm }}-${{ github.run_id }}
+          # hhmm("22:00")엔 콜론이 있어 아티팩트 업로드가 거부된다(2026-07-28
+          # 확인, 파일이 있을 때만 발현되는 잠복 버그) — 콜론 없는 hh(시)를 쓴다.
+          name: night-slot-${{ steps.slot.outputs.hh }}-${{ github.run_id }}
           path: |
             output/**/vision_results.json
           if-no-files-found: ignore

@@ -32,7 +32,8 @@ from pathlib import Path
 from . import market, news, tg_format
 from .capture import CaptureError, capture_live_session, download_vod
 from .common import (load_env, load_holdings, load_settings, log, now_kst,
-                     output_dir, parse_duration, setup_logging, window_offsets)
+                     output_dir, parse_duration, parse_kst_time,
+                     setup_logging, window_offsets)
 from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
@@ -144,20 +145,60 @@ def night_session_date(hour: int, base: datetime | None = None) -> str:
     return base.strftime("%Y%m%d")
 
 
-def _slot_settings(settings: dict, slot_hhmm: str, duration_min: int) -> dict:
-    """night 세션 설정을 슬롯 시각(HH:MM)에 맞춰 캡처 시작·종료로 오버라이드한 사본.
+def _slot_nominal_dt(slot_hhmm: str, now: datetime) -> datetime:
+    """슬롯 이름(HH:MM)이 지금(now) 기준 실제로 어제였는지 오늘이었는지 판단.
 
-    capture_live_session()이 settings["sessions"]["night"]의 start_kst/end_kst를
-    읽으므로, 슬롯마다 그 값을 그 슬롯의 실제 시각으로 바꿔치기한다.
+    22·23시 슬롯은 cron 지연이 자정을 넘기면 now의 날짜가 이미 다음날이라,
+    슬롯 시각은 "어제" 날짜로 되돌려야 한다 — `night_session_date()`가 슬롯
+    저장 시 쓰는 것과 같은 hour>=12 규칙(2026-07-28)을 여기서도 그대로 쓴다.
     """
     h, m = (int(x) for x in slot_hhmm.split(":"))
-    end_total = h * 60 + m + duration_min
-    end_h, end_m = (end_total // 60) % 24, end_total % 60
+    base = now
+    if h >= 12 and now.hour < 12:
+        base = now - timedelta(days=1)
+    return base.replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+def _broadcast_end_kst(session_cfg: dict, slot_nominal: datetime) -> datetime:
+    """이 슬롯이 속한 밤 방송이 끝나는 시각 — slot_nominal 기준으로 다음에 오는
+    06시(기본값, `digest_kst`와 동일. 필요하면 `broadcast_end_kst`로 따로 지정)."""
+    end_hhmm = session_cfg.get("broadcast_end_kst") or session_cfg.get("digest_kst", "06:00")
+    end = parse_kst_time(end_hhmm, slot_nominal)
+    if end <= slot_nominal:
+        end += timedelta(days=1)
+    return end
+
+
+def _slot_settings(settings: dict, slot_hhmm: str, duration_min: int,
+                   now: datetime | None = None) -> dict:
+    """night 세션 설정을 슬롯 시각(HH:MM)에 맞춰 캡처 시작·종료로 오버라이드한 사본.
+
+    ⚠️ cron 지연 내성(2026-08-01) — GitHub 무료 티어 cron은 최대 3시간38분까지
+    밀린다. 슬롯 정시가 이미 지났는데도 "정시부터 5분"으로 고정하면
+    `record_stream()`이 즉시 "녹화 종료 시각이 이미 지남"으로 실패한다
+    (night-slot 8개가 실전에서 전부 이렇게 실패했다). 슬롯이 이미 지났으면
+    "정시부터"가 아니라 "지금부터 duration_min"으로 캡처한다 — 방송이
+    22:00~06:00 연속이라 몇십 분 밀려도 "시간당 샘플" 목적엔 지장이 없다.
+    방송 자체가 끝났는지(=지금 >= 방송 종료)는 `run_night_slot()`이 이 함수를
+    부르기 전에 먼저 걸러 정상 종료(exit 0)시킨다.
+    """
+    now = now or now_kst()
+    nominal = _slot_nominal_dt(slot_hhmm, now)
+    session_cfg = settings["sessions"]["night"]
+    broadcast_end = _broadcast_end_kst(session_cfg, nominal)
+
+    if now >= nominal:
+        start_dt = now
+        end_dt = min(now + timedelta(minutes=duration_min), broadcast_end)
+    else:
+        start_dt = nominal
+        end_dt = nominal + timedelta(minutes=duration_min)
+
     s = copy.deepcopy(settings)
     ncfg = s["sessions"]["night"]
-    ncfg["poll_from_kst"] = slot_hhmm
-    ncfg["start_kst"] = slot_hhmm
-    ncfg["end_kst"] = f"{end_h:02d}:{end_m:02d}"
+    ncfg["poll_from_kst"] = start_dt.strftime("%H:%M")
+    ncfg["start_kst"] = start_dt.strftime("%H:%M")
+    ncfg["end_kst"] = end_dt.strftime("%H:%M")
     return s
 
 
@@ -250,9 +291,23 @@ def run_night_slot(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
     그래서 실패해도 텔레그램 경고를 보내지 않는다(8번의 소음을 피함).
     """
     session_cfg = settings["sessions"]["night"]
-    slot_settings = _slot_settings(settings, args.slot, session_cfg.get("slot_duration_min", 5))
+    duration_min = session_cfg.get("slot_duration_min", 5)
     hour_label = args.slot.split(":")[0]
-    log.info("=== 3tv 야간 슬롯 %s 시작 (%s) ===", args.slot, now_kst().strftime("%Y-%m-%d %H:%M"))
+    now = now_kst()
+
+    # 실전 라이브 경로에서만 "방송 이미 끝남"을 확인한다 — --vod-url/--video-file
+    # 테스트·복구 실행은 지금이 몇 시든 그대로 진행돼야 한다.
+    if not args.vod_url and not args.video_file:
+        nominal = _slot_nominal_dt(args.slot, now)
+        broadcast_end = _broadcast_end_kst(session_cfg, nominal)
+        if now >= broadcast_end:
+            log.info("야간 슬롯(%s) 스킵: 방송 종료(%s KST) 이후 실행돼 캡처하지 않음 "
+                     "(지금 %s KST) — 실패 아님, 정상 종료",
+                     args.slot, broadcast_end.strftime("%H:%M"), now.strftime("%H:%M"))
+            return 0
+
+    slot_settings = _slot_settings(settings, args.slot, duration_min, now)
+    log.info("=== 3tv 야간 슬롯 %s 시작 (%s) ===", args.slot, now.strftime("%Y-%m-%d %H:%M"))
 
     try:
         video = get_video(args, slot_settings, out_dir)

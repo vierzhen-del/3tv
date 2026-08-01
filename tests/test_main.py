@@ -46,7 +46,9 @@ def test_night_session_date_all_8_slots_plus_digest_agree():
 
 
 def test_slot_settings_overrides_start_end_without_mutating_original():
-    out = main_mod._slot_settings(SETTINGS, "22:00", 5)
+    """정시 전(=지연 없음)이면 기존처럼 슬롯 정시 그대로 쓴다."""
+    now = datetime(2026, 7, 28, 21, 55, tzinfo=KST)
+    out = main_mod._slot_settings(SETTINGS, "22:00", 5, now)
     assert out["sessions"]["night"]["start_kst"] == "22:00"
     assert out["sessions"]["night"]["end_kst"] == "22:05"
     # 원본은 그대로 (deepcopy 확인 — 다음 슬롯이 이전 슬롯 값을 안 물려받아야 함)
@@ -56,14 +58,66 @@ def test_slot_settings_overrides_start_end_without_mutating_original():
 
 def test_slot_settings_handles_hour_rollover():
     """05:58 슬롯 + 5분 = 06:03처럼 시간이 넘어가도 정상 계산된다."""
-    out = main_mod._slot_settings(SETTINGS, "05:58", 5)
+    now = datetime(2026, 7, 29, 5, 50, tzinfo=KST)
+    out = main_mod._slot_settings(SETTINGS, "05:58", 5, now)
     assert out["sessions"]["night"]["end_kst"] == "06:03"
 
 
 def test_slot_settings_midnight_boundary():
     """23:58 슬롯 + 5분은 자정을 넘어 00:03이 된다."""
-    out = main_mod._slot_settings(SETTINGS, "23:58", 5)
+    now = datetime(2026, 7, 28, 23, 50, tzinfo=KST)
+    out = main_mod._slot_settings(SETTINGS, "23:58", 5, now)
     assert out["sessions"]["night"]["end_kst"] == "00:03"
+
+
+# ── 2026-08-01 cron 지연 내성 (A-2) ─────────────────────────────────────
+
+def test_slot_settings_on_time_uses_nominal_slot():
+    """정시 전에 실행되면(=지연 없음) 종전처럼 슬롯 정시부터 캡처한다."""
+    now = datetime(2026, 7, 28, 21, 59, tzinfo=KST)   # 22:00 슬롯 1분 전
+    out = main_mod._slot_settings(SETTINGS, "22:00", 5, now)
+    assert out["sessions"]["night"]["start_kst"] == "22:00"
+    assert out["sessions"]["night"]["end_kst"] == "22:05"
+
+
+def test_slot_settings_late_start_captures_from_now():
+    """cron이 밀려 슬롯 정시가 이미 지났으면 '정시부터'가 아니라 '지금부터'
+    duration_min만 캡처한다 — 안 그러면 record_stream()이 곧바로
+    '녹화 종료 시각이 이미 지남'으로 실패한다(실전 8슬롯 전부 이렇게 죽었다)."""
+    now = datetime(2026, 7, 28, 22, 47, tzinfo=KST)   # 22:00 슬롯인데 47분 지연
+    out = main_mod._slot_settings(SETTINGS, "22:00", 5, now)
+    assert out["sessions"]["night"]["start_kst"] == "22:47"
+    assert out["sessions"]["night"]["end_kst"] == "22:52"
+
+
+def test_slot_settings_late_start_clamped_to_broadcast_end():
+    """방송 종료(06:00) 직전까지 밀렸으면 duration_min을 다 못 채우고
+    방송 종료 시각에서 잘라야 한다(방송 끝난 시간대를 캡처하면 안 됨)."""
+    now = datetime(2026, 7, 29, 5, 58, tzinfo=KST)    # 05:00 슬롯, 06:00 방송종료 2분 전
+    settings = {"sessions": {"night": {**SETTINGS["sessions"]["night"]}}}
+    out = main_mod._slot_settings(settings, "05:00", 5, now)
+    assert out["sessions"]["night"]["start_kst"] == "05:58"
+    assert out["sessions"]["night"]["end_kst"] == "06:00"   # 06:03이 아니라 06:00에서 잘림
+
+
+def test_slot_nominal_dt_rolls_back_a_day_after_midnight():
+    """22/23시 슬롯이 자정을 넘겨 실행되면(=now가 이미 다음날) 슬롯은 '어제'
+    날짜로 되돌려야 한다 — night_session_date()의 hour>=12 규칙과 대칭."""
+    now = datetime(2026, 7, 29, 1, 38, tzinfo=KST)    # 22:00 슬롯이 3h38m 밀려 다음날 새벽에 실행
+    nominal = main_mod._slot_nominal_dt("22:00", now)
+    assert nominal == datetime(2026, 7, 28, 22, 0, tzinfo=KST)
+
+
+def test_broadcast_end_kst_for_evening_slot_is_next_morning():
+    nominal = datetime(2026, 7, 28, 22, 0, tzinfo=KST)
+    end = main_mod._broadcast_end_kst(SETTINGS["sessions"]["night"], nominal)
+    assert end == datetime(2026, 7, 29, 6, 0, tzinfo=KST)
+
+
+def test_broadcast_end_kst_for_early_morning_slot_is_same_day():
+    nominal = datetime(2026, 7, 29, 2, 0, tzinfo=KST)
+    end = main_mod._broadcast_end_kst(SETTINGS["sessions"]["night"], nominal)
+    assert end == datetime(2026, 7, 29, 6, 0, tzinfo=KST)
 
 
 def test_parse_args_night_requires_slot_or_digest():
