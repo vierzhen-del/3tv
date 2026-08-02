@@ -222,3 +222,53 @@ def test_parse_args_night_digest_ok():
         assert args.session == "night" and args.digest is True and args.slot is None
     finally:
         sys.argv = orig_argv
+
+
+# ── 저장위치 링크 + 리포트 꼬리말 (2026-08-02) ─────────────────────────────
+# obsidian:// 딥링크가 탭S9에서 열리지 않아 「저장위치」 https 링크로 바꿨다.
+OBS_CFG = {
+    "vault_name": "vierzhen_home",
+    "vault_repo": "vierzhen-del/3tv-reports",
+    "vault_branch": "main",
+}
+REL = "3protv/2026/08/3protv오늘_20260802_반도체.md"
+
+
+def test_vault_location_link_points_at_relay_repo_file():
+    from threetv.obsidian_archive import vault_location_link
+    link = vault_location_link(OBS_CFG, REL)
+    # 링크 글자는 볼트 안 실제 경로 — 딥링크가 안 열려도 위치를 눈으로 확인할 수 있다
+    assert link.startswith("🗂 저장위치: [vierzhen_home/3protv/2026/08/")
+    assert "https://github.com/vierzhen-del/3tv-reports/blob/main/3protv/2026/08/" in link
+    # 경로 구분자가 %2F로 인코딩되면 GitHub URL이 깨진다
+    assert "%2F" not in link
+
+
+def test_vault_location_link_without_repo_is_plain_path():
+    from threetv.obsidian_archive import vault_location_link
+    link = vault_location_link({"vault_name": "vierzhen_home"}, REL)
+    assert link == f"🗂 저장위치: vierzhen_home/{REL}"
+    assert "http" not in link
+
+
+def test_vault_location_link_empty_when_path_unknown():
+    from threetv.obsidian_archive import vault_location_link
+    assert vault_location_link(OBS_CFG, "") == ""
+
+
+def test_report_footer_has_location_and_generated_time():
+    from threetv.obsidian_archive import ArchiveResult
+    footer = main_mod.report_footer({"obsidian": OBS_CFG},
+                                    ArchiveResult(True, False, "", REL))
+    assert "🗂 저장위치: [" in footer
+    assert "🕘 생성 " in footer and " KST" in footer
+    assert "옵시디안에서 열기" not in footer
+
+
+def test_report_footer_keeps_time_when_archive_failed():
+    """저장이 실패하면 위치 줄은 빼되 생성시각은 남긴다 — 죽은 링크를 붙이지 않는다."""
+    from threetv.obsidian_archive import ArchiveResult
+    footer = main_mod.report_footer({"obsidian": OBS_CFG},
+                                    ArchiveResult(False, False, "push 실패", REL))
+    assert "저장위치" not in footer
+    assert "🕘 생성 " in footer

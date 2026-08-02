@@ -38,15 +38,32 @@ from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
 from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
-                               archive_simple_report, obsidian_deeplink,
-                               read_night_slots, read_us_section_today,
-                               save_night_slot)
+                               archive_simple_report, read_night_slots,
+                               read_us_section_today, save_night_slot,
+                               vault_location_link)
 from .report import (drop_etf_stocks, extract_mentions, generate_etf_review,
                      generate_night_digest,
                      generate_noon_report, generate_report,
                      us_stocks_in_captures)
 from .transcribe import transcribe
 from .vision import analyze_frames
+
+
+def report_footer(settings: dict, archived: ArchiveResult) -> str:
+    """텔레그램 본문 맨 아래 공통 꼬리말 — 저장위치 + 생성시각.
+
+    세션마다(us/kr·noon·night·etf) 따로 조립하던 「옵시디안에서 열기」 줄을 하나로 모았다.
+    딥링크는 탭S9에서 열리지 않아 저장위치 링크로 바꿨다(vault_location_link 참조).
+    생성시각은 리포트가 언제 만들어진 것인지 나중에 되짚기 위해 항상 붙인다 —
+    제목의 날짜만으로는 같은 날 여러 세션 중 어느 시점 결과인지 알 수 없다.
+    """
+    lines = []
+    if archived.ok:
+        location = vault_location_link(settings.get("obsidian", {}), archived.rel)
+        if location:
+            lines.append(location)
+    lines.append(f"🕘 생성 {now_kst():%Y-%m-%d %H:%M} KST")
+    return "\n\n" + "\n".join(lines)
 
 
 def parse_args() -> argparse.Namespace:
@@ -306,9 +323,7 @@ def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
     label_suffix = f"{label}" if not used_vod_fallback else f"{label} · 다시보기 기준"
     header = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']} [{label_suffix}]"
     body = f"**{header}**\n\n{report['telegram_text']}"
-    deeplink = obsidian_deeplink(settings.get("obsidian", {}), file_prefix="3protv정오")
-    if deeplink and archived.ok:
-        body += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
+    body += report_footer(settings, archived)
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
     else:
@@ -425,9 +440,7 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
     body = f"**{header}**\n\n{report['telegram_text']}"
     if len(slots) < n_slots:
         body += f"\n\n⚠️ 슬롯 {len(slots)}/{n_slots}개만 수집됨 — 일부 시간대 캡처가 누락됐을 수 있습니다."
-    deeplink = obsidian_deeplink(settings.get("obsidian", {}), file_prefix="3protv야간")
-    if deeplink and archived.ok:
-        body += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
+    body += report_footer(settings, archived)
 
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
@@ -503,9 +516,7 @@ def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
         archived = archive_simple_report(
             settings["obsidian"], "3protvETF", report["title_keyword"],
             tg_format.to_obsidian(report["markdown_report"]))
-    deeplink = obsidian_deeplink(settings.get("obsidian", {}), file_prefix="3protvETF")
-    if deeplink and archived.ok:
-        body += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
+    body += report_footer(settings, archived)
 
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
@@ -696,14 +707,13 @@ def run(args: argparse.Namespace) -> int:
     #    세션당 2건 — ① 시황 ② 종목 기사검색. 한 건에 다 담으면 기사 목록이
     #    본문을 잠식해 읽히지 않았다(2026-07-27 실물 스크린샷 지적).
     base = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']}"
-    deeplink = obsidian_deeplink(settings.get("obsidian", {}))
     parts = [
         (f"{base} [{label}]", reports.get("sihwang", "")),
         (f"{base} [{label} · 종목기사]", reports.get("news", "")),
     ]
     messages = [f"**{head}**\n\n{body}" for head, body in parts if body.strip()]
-    if messages and deeplink and archived.ok:
-        messages[-1] += f"\n\n🗂 [옵시디안에서 열기]({deeplink})"
+    if messages:
+        messages[-1] += report_footer(settings, archived)
 
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)

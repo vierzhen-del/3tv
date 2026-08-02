@@ -132,6 +132,10 @@ def obsidian_deeplink(
 ) -> str:
     """탭S9/S26에서 탭하면 옵시디안이 열리는 딥링크.
 
+    ⚠️ **2026-08-02부터 호출부가 없다** — 탭S9에서 눌러도 옵시디안이 열리지 않아
+    `vault_location_link()`(저장위치 https 링크)로 대체했다. 다시 쓰려면 실기기에서
+    실제로 열리는지부터 확인할 것. 함수는 그때를 위해 남겨 둔다.
+
     파일명에는 그날 키워드가 붙어 전송 시점엔 확정되지 않으므로(us 세션이 만든
     파일을 kr이 재사용) **검색 딥링크**를 쓴다 — 날짜만으로 항상 맞는다.
     `file_prefix`로 noon(`3protv정오`)·night(`3protv야간`) 노트도 같은 방식으로 연결한다.
@@ -142,6 +146,31 @@ def obsidian_deeplink(
     ymd = (date or now_kst()).strftime("%Y%m%d")
     return (f"obsidian://search?vault={quote(vault)}"
             f"&query={quote(f'{file_prefix}_{ymd}')}")
+
+
+def vault_location_link(obsidian_cfg: dict, rel: str) -> str:
+    """텔레그램 하단에 붙는 「저장위치」 한 줄.
+
+    obsidian:// 딥링크를 대체한다 — 탭S9에서 눌러도 옵시디안이 열리지 않았다
+    (2026-08-02 실측). 안드로이드가 커스텀 스킴을 앱으로 넘겨주지 못하면 링크가
+    죽은 채로 남으므로, **어디서나 열리는 https 링크**(중계 repo의 그 파일)로 바꾸고
+    링크 글자에는 볼트 안 실제 경로를 보여준다 — 딥링크가 안 열리는 기기에서도
+    "어디에 저장됐는지"는 눈으로 확인할 수 있다.
+
+    rel이 비어 있으면(저장 경로를 모르는 실패 경로) 빈 문자열을 돌려 줄을 생략한다.
+    """
+    if not rel:
+        return ""
+    cfg = obsidian_cfg or {}
+    vault = (cfg.get("vault_name") or "").strip()
+    shown = f"{vault}/{rel}" if vault else rel
+    repo = (cfg.get("vault_repo") or "").strip()
+    if not repo:
+        return f"🗂 저장위치: {shown}"
+    branch = cfg.get("vault_branch", "main")
+    # safe="/"가 없으면 경로 구분자까지 %2F로 인코딩돼 GitHub URL이 깨진다
+    url = f"https://github.com/{repo}/blob/{branch}/{quote(rel, safe='/')}"
+    return f"🗂 저장위치: [{shown}]({url})"
 
 
 def _frontmatter(

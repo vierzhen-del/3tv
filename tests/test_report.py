@@ -957,3 +957,28 @@ def test_no_fold_markers_leaves_text_unchanged():
 ===END==="""
     out = report_mod._parse_sections(text)
     assert out["markdown_report"] == "평범한 시황 내용"
+
+
+def test_mention_line_uses_mic_emoji_only():
+    """언급 여부는 🎤 하나로만 — "(언급 없음)"은 줄만 늘려 걷어냈다(2026-08-02)."""
+    hit = report_mod.mention_line(
+        {"name": "마이크론", "mentioned": True, "context": "메타와 마진율 비교"})
+    miss = report_mod.mention_line({"name": "삼성전자", "mentioned": False, "context": ""})
+    assert hit == "• 🎤 마이크론"          # 맥락 문구는 붙지 않는다
+    assert miss == "• 삼성전자"            # 미언급은 아무 표시도 없다
+    assert "언급 없음" not in miss
+    assert "📡" not in hit
+
+
+def test_watchlist_prompt_forbids_no_mention_text():
+    """프롬프트가 LLM에게 같은 규칙을 지시하는지 — 실제 리포트는 LLM이 쓴다."""
+    src = Path(report_mod.__file__).read_text(encoding="utf-8")
+    assert "`(언급 없음)`이라고 쓰면 안 됩니다" in src
+    assert "줄 앞에 **🎤** 하나만 붙이고 **맥락은 쓰지 마세요.**" in src
+
+
+def test_capture_prompt_merges_symbols_and_drops_time():
+    """캡처 섹션: 같은 종목 합치기 + 시각 미표기 지시가 살아 있는지."""
+    src = Path(report_mod.__file__).read_text(encoding="utf-8")
+    assert "**같은 종목은 한 덩어리로 합치고, 시각(HH:MM)은 쓰지 마세요.**" in src
+    assert "⚠️ **시각은 쓰지 마세요**" in src
