@@ -521,7 +521,9 @@ def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
     if args.skip_notify:
         log.info("--skip-notify: 전송 생략 (결과는 %s 에 저장됨)", out_dir)
     else:
-        # 본문을 이미 HTML 태그로 만들어 뒀으므로 마크다운 변환 없이 그대로 보낸다
+        # generate_etf_review()는 다른 세션과 동일하게 마크다운(**굵게**)으로 본문을
+        # 만든다(2026-08-08 수정 전엔 <b> 태그를 직접 박아넣어서, 여기서 to_telegram_html()이
+        # 그 태그를 이스케이프해 텔레그램 화면에 <b> 글자가 그대로 노출됐다).
         send_telegram(tg_format.to_telegram_html(body),
                       settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):

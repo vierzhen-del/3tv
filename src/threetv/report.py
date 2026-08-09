@@ -1512,7 +1512,7 @@ def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
     수량(실매매)을 본문에, 비중 변화는 괄호로 덧붙인다 — 비중만 크게 움직이고
     수량이 그대로면 그건 매매가 아니라 주가효과라 오해를 부른다.
     """
-    lines = [f"■ <b>{name}</b> ({ticker})"]
+    lines = [f"■ **{name}** ({ticker})"]
     head = f"구성 {diff['count_today']}종목"
     if prev_date:
         head += f" · {prev_date[4:6]}/{prev_date[6:8]} 대비"
@@ -1523,7 +1523,7 @@ def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
     shift = diff.get("basket_shift") or 0
     if abs(shift) >= 1:
         lines.append(f"⚙️ 설정단위 전체 {_fmt_pp(shift).replace('%p', '%')} 조정"
-                     " <i>(개별 매매 아님)</i>")
+                     " *(개별 매매 아님)*")
 
     if diff["added"]:
         items = ", ".join(
@@ -1554,7 +1554,7 @@ def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
             items = ", ".join(f"{m['name']} {_fmt_pp(m['dw'])}" for m in diff["weight_down"])
             lines.append(f"📉 비중 축소: {items}")
         if diff["weight_up"] or diff["weight_down"]:
-            lines.append("  <i>(수량 미공시 — 주가 등락에 의한 변동이 섞여 있습니다)</i>")
+            lines.append("  *(수량 미공시 — 주가 등락에 의한 변동이 섞여 있습니다)*")
 
     return "\n".join(lines)
 
@@ -1572,6 +1572,6 @@ def generate_etf_review(settings: dict, results: list[dict]) -> dict:
               for r in results]
     body = "\n\n".join(blocks) or "(조회된 ETF가 없습니다)"
     note = ("ℹ️ KRX 공시 납입자산구성내역(PDF) 기준. 비중은 주가 등락으로도 변하므로 "
-            "실제 운용 매매는 <b>수량 변화</b>로 판정합니다.")
-    md = f"📦 <b>ETF 포트폴리오 리뷰</b> ({today})\n\n{body}\n\n{note}\n\n{settings['report']['disclaimer']}"
+            "실제 운용 매매는 **수량 변화**로 판정합니다.")
+    md = f"📦 **ETF 포트폴리오 리뷰** ({today})\n\n{body}\n\n{note}\n\n{settings['report']['disclaimer']}"
     return {"title_keyword": "ETF구성변화", "telegram_text": md, "markdown_report": md}
