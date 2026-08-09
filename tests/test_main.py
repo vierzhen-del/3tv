@@ -121,13 +121,54 @@ def test_broadcast_end_kst_for_early_morning_slot_is_same_day():
     assert end == datetime(2026, 7, 29, 6, 0, tzinfo=KST)
 
 
-# ── noon VOD 폴백 (2026-08-01, B 섹션) ──────────────────────────────────
+# ── VOD 폴백 (2026-08-01 noon에서 시작, 2026-08-09 us/kr로 일반화) ──────────
 
 def _noon_cfg():
     return {
         "live_url": "https://www.youtube.com/@gyeomsonisnothing/live",
         "start_kst": "12:00", "end_kst": "12:20",
     }
+
+
+def _kr_settings():
+    """us/kr은 자체 live_url이 없어 channel.live_url로 폴백한다 — 그 경로도 함께 확인."""
+    return {
+        "capture": {"resolution": 480},
+        "channel": {"live_url": "https://www.youtube.com/@3protv/live"},
+        "sessions": {"kr": {"start_kst": "07:45", "end_kst": "08:25"}},
+    }
+
+
+def test_vod_fallback_uses_channel_live_url_when_session_has_none(monkeypatch, tmp_path):
+    """kr 세션 설정엔 live_url이 없다 — channel.live_url로 폴백해야 한다."""
+    seen_url = {}
+
+    def fake_find(live_url):
+        seen_url["v"] = live_url
+        return ("https://y/w", None)
+    monkeypatch.setattr(main_mod, "find_recent_vod", fake_find)
+    monkeypatch.setattr(main_mod, "download_vod", lambda *a, **k: a[1])
+
+    main_mod._vod_fallback(_kr_settings(), "kr", tmp_path)
+    assert seen_url["v"] == "https://www.youtube.com/@3protv/live"
+
+
+def test_vod_fallback_kr_offset_from_release_ts(monkeypatch, tmp_path):
+    """kr(07:45~08:25)도 noon과 동일한 오프셋 계산이 적용된다."""
+    target = parse_kst_time("07:45")
+    release_dt = target - timedelta(minutes=5)
+    monkeypatch.setattr(main_mod, "find_recent_vod",
+                        lambda live_url: ("https://y/watch?v=kr", int(release_dt.timestamp())))
+    captured = {}
+
+    def fake_download(url, out_file, resolution, start_sec, duration_sec):
+        captured.update(start_sec=start_sec, duration_sec=duration_sec)
+        return out_file
+    monkeypatch.setattr(main_mod, "download_vod", fake_download)
+
+    main_mod._vod_fallback(_kr_settings(), "kr", tmp_path)
+    assert captured["start_sec"] == 5 * 60          # 07:45 - (07:40 시작) = 5분 오프셋
+    assert captured["duration_sec"] == 40 * 60       # 07:45~08:25 구간 길이
 
 
 def test_noon_vod_fallback_computes_offset_from_release_ts(monkeypatch, tmp_path):
@@ -143,7 +184,8 @@ def test_noon_vod_fallback_computes_offset_from_release_ts(monkeypatch, tmp_path
         return out_file
     monkeypatch.setattr(main_mod, "download_vod", fake_download)
 
-    main_mod._noon_vod_fallback({"capture": {"resolution": 480}}, _noon_cfg(), tmp_path)
+    settings = {"capture": {"resolution": 480}, "sessions": {"noon": _noon_cfg()}}
+    main_mod._vod_fallback(settings, "noon", tmp_path)
     assert captured["url"] == "https://y/watch?v=abc"
     assert captured["start_sec"] == 150
     assert captured["duration_sec"] == 20 * 60
@@ -167,7 +209,8 @@ def test_noon_vod_fallback_missing_release_ts_uses_default_window(monkeypatch, t
         return out_file
     monkeypatch.setattr(main_mod, "download_vod", fake_download)
 
-    main_mod._noon_vod_fallback({"capture": {"resolution": 480}}, _noon_cfg(), tmp_path)
+    settings = {"capture": {"resolution": 480}, "sessions": {"noon": _noon_cfg()}}
+    main_mod._vod_fallback(settings, "noon", tmp_path)
     assert captured["start_sec"] == 0
     assert captured["duration_sec"] == 25 * 60
 

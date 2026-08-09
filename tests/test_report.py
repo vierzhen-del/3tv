@@ -386,7 +386,11 @@ def test_legacy_markdown_section_still_parsed(tmp_path, monkeypatch):
 
 
 def test_report_split_into_sihwang_and_news(tmp_path, monkeypatch):
-    """세션당 2건 — 시황 / 종목기사검색으로 분리되고 '기타'는 접기 블록으로."""
+    """세션당 2건 — 시황 / 종목기사검색으로 분리되고 '기타'는 텔레그램용에서만 접힌다.
+
+    저장(옵시디안)용 news는 접지 않고 전부 남겨야 한다(2026-08-09 확정 —
+    나중에 read_us_section_today() 등으로 재사용될 때 전종목이 검색돼야 함).
+    """
     monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: """===TITLE===
 반도체급등
 ===SIHWANG===
@@ -403,13 +407,23 @@ def test_report_split_into_sihwang_and_news(tmp_path, monkeypatch):
     data = _generate(tmp_path, transcript="")
     assert data["title_keyword"] == "반도체급등"
     assert "나스닥 강세" in data["reports"]["sihwang"]
+
+    # 저장용(news) — 접지 않고 인텔까지 그대로 검색 가능해야 한다
     assert "엔비디아" in data["reports"]["news"]
-    assert "---기타---" not in data["reports"]["news"]     # 접기 마커로 치환됨
-    assert tg_format.FOLD_OPEN in data["reports"]["news"]
     assert "인텔" in data["reports"]["news"]
-    # 통합본(옵시디안 단일 파일·하위호환)에는 둘 다 들어간다
+    assert tg_format.FOLD_OPEN not in data["reports"]["news"]
+
+    # 전송용(news_telegram) — '기타'는 접기 블록 안으로
+    assert "엔비디아" in data["reports"]["news_telegram"]
+    assert "---기타---" not in data["reports"]["news_telegram"]   # 접기 마커로 치환됨
+    assert tg_format.FOLD_OPEN in data["reports"]["news_telegram"]
+    assert "인텔" in data["reports"]["news_telegram"]
+
+    # 통합본(옵시디안 단일 파일·하위호환)에는 둘 다 접지 않은 채로 들어간다
     assert "나스닥 강세" in data["markdown_report"]
     assert "엔비디아" in data["markdown_report"]
+    assert "인텔" in data["markdown_report"]
+    assert tg_format.FOLD_OPEN not in data["markdown_report"]
     assert data["holdings_mentioned"][0]["mentioned"] is True
 
 
@@ -434,7 +448,11 @@ def test_fold_top_n_noop_when_within_limit():
 
 
 def test_daily_section_folds_after_top_3(tmp_path, monkeypatch):
-    """===DAILY=== 도 상위 3개만 노출되고 나머지는 접힌다(2026-08-09 요청)."""
+    """===DAILY=== 텔레그램 전송본은 상위 3개만 노출되고 나머지는 접힌다(2026-08-09 요청).
+
+    저장(옵시디안)용은 접지 않는다 — 나중에 컨텍스트로 재사용할 때 전종목이
+    검색돼야 하기 때문(같은 날 사용자 확정: "저장시는 풀고저장").
+    """
     daily_issues = "\n".join(
         f"• **이슈{i}** — 요약\n  🔗 [기사{i}](https://n/{i})" for i in range(1, 6)
     )
@@ -450,10 +468,17 @@ def test_daily_section_folds_after_top_3(tmp_path, monkeypatch):
 ===HOLDINGS===
 ===END===""")
     data = _generate(tmp_path, transcript="")
-    news = data["reports"]["news"]
-    assert "이슈1" in news and "이슈3" in news
-    assert tg_format.FOLD_OPEN in news
-    assert "이슈5" in news       # 접힌 채로 본문에는 남아있음(펼치면 보임)
+
+    # 텔레그램 전송본 — 상위 3개만 노출, 나머지는 접기 블록 안
+    news_tg = data["reports"]["news_telegram"]
+    assert "이슈1" in news_tg and "이슈3" in news_tg
+    assert tg_format.FOLD_OPEN in news_tg
+    assert "이슈5" in news_tg       # 접힌 채로 본문에는 남아있음(펼치면 보임)
+
+    # 저장용 — 접지 않고 전부 그대로
+    news_archive = data["reports"]["news"]
+    assert "이슈1" in news_archive and "이슈3" in news_archive and "이슈5" in news_archive
+    assert tg_format.FOLD_OPEN not in news_archive
 
 
 def test_verbatim_caps_very_long_screen(tmp_path, llm_down):

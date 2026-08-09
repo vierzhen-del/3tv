@@ -219,33 +219,36 @@ def _slot_settings(settings: dict, slot_hhmm: str, duration_min: int,
     return s
 
 
-def _noon_vod_fallback(settings: dict, session_cfg: dict, out_dir: Path) -> Path:
-    """라이브 창(12:00~12:20)을 놓쳤을 때 오늘자 다시보기에서 같은 구간을 잘라 받는다
-    (2026-08-01, 사용자 확정 "VOD 폴백 신설").
+def _vod_fallback(settings: dict, session: str, out_dir: Path) -> Path:
+    """라이브 창을 놓쳤을 때(cron 지연·라이브 미시작) 오늘자 다시보기에서 같은
+    구간을 잘라 받는다.
 
-    noon 라이브 캡처는 cron 지연(무료 티어 최대 3h38m > 라이브 창 75분 여유)
-    으로 실전에서 한 번도 성공하지 못했다 — 지연 폭과 무관하게 항상 끝나는
-    다시보기 경로로 매일 발행을 보장한다.
-    release_timestamp(실제 방송 시작)를 구하면 12:00 KST까지의 오프셋을
-    정확히 계산하고, 못 구하면 "방송이 12:00 정각 시작"이라는 전제로
-    오프셋 0에 여유(25분)를 더해 받는다 — "정오의 Money 뉴스" 고정 코너가
-    8~12분대에 나오므로 이 오차는 흡수된다(사용자 확정).
+    noon 세션에서 먼저 확인된 패턴(2026-08-01, "VOD 폴백 신설")을 us/kr에도
+    적용한다(2026-08-09) — kr 08/07 캡처가 라이브 미시작으로 실패해 사람이
+    매번 `--vod-url`로 복구해야 했다. cron 지연·라이브 미시작 등 원인과
+    무관하게 항상 끝나는 다시보기 경로로 매일 발행을 보장한다.
+
+    release_timestamp(실제 방송 시작)를 구하면 세션 시작 시각까지의 오프셋을
+    정확히 계산하고, 못 구하면 "방송이 정시 시작"이라는 전제로 오프셋 0에
+    여유(25분)를 더해 받는다.
     """
-    video_url, release_ts = find_recent_vod(session_cfg["live_url"])
-    target = parse_kst_time(session_cfg.get("start_kst", "12:00"))
+    session_cfg = settings["sessions"][session]
+    live_url = session_cfg.get("live_url") or settings["channel"]["live_url"]
+    video_url, release_ts = find_recent_vod(live_url)
+    target = parse_kst_time(session_cfg.get("start_kst", "00:00"))
 
     if release_ts is not None:
         release_dt = datetime.fromtimestamp(release_ts, tz=KST)
         offset_sec = max(0, int((target - release_dt).total_seconds()))
-        end = parse_kst_time(session_cfg.get("end_kst", "12:20"))
+        end = parse_kst_time(session_cfg.get("end_kst") or session_cfg.get("start_kst", "00:00"))
         duration_sec = max(60, int((end - target).total_seconds()))
     else:
-        log.warning("다시보기 시작 시각을 확인 못함 — 12:00 정각 시작으로 가정(오프셋 0, 25분 확보)")
+        log.warning("다시보기 시작 시각을 확인 못함 — 세션 정각 시작으로 가정(오프셋 0, 25분 확보)")
         offset_sec = 0
         duration_sec = 25 * 60
 
     log.info("다시보기 폴백: %s (오프셋 %d초, %d초 분량)", video_url, offset_sec, duration_sec)
-    return download_vod(video_url, out_dir / "noon_vod.mp4",
+    return download_vod(video_url, out_dir / f"{session}_vod.mp4",
                         settings["capture"]["resolution"], offset_sec, duration_sec)
 
 
@@ -274,7 +277,7 @@ def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
                 video = get_video(args, settings, out_dir)
             else:
                 log.warning("라이브 창(~%s KST)을 이미 지나 다시보기로 전환", end.strftime("%H:%M"))
-                video = _noon_vod_fallback(settings, session_cfg, out_dir)
+                video = _vod_fallback(settings, "noon", out_dir)
                 used_vod_fallback = True
     except CaptureError as e:
         log.error("캡처 실패(라이브+다시보기 모두): %s", e)
@@ -560,11 +563,30 @@ def run(args: argparse.Namespace) -> int:
     label = settings["sessions"][session]["label"]
     log.info("=== 3tv %s 세션 시작 (%s) ===", label, now_kst().strftime("%Y-%m-%d %H:%M"))
 
-    # 1. 캡처 (라이브 / VOD / 로컬 파일)
+    # 1. 캡처 (라이브 / VOD / 로컬 파일) — 라이브 창을 이미 지났거나(cron 지연)
+    #    라이브 캡처 자체가 실패하면(스트림 미시작 등) 다시보기로 자동 전환한다
+    #    (noon에서 먼저 검증된 패턴, 2026-08-09 kr 08/07 캡처 실패로 us/kr에도 적용).
+    #    --vod-url/--video-file 수동 실행은 그대로 기존 경로를 쓴다(폴백 대상 아님).
+    used_vod_fallback = False
     try:
-        video = get_video(args, settings, out_dir)
+        if args.vod_url or args.video_file:
+            video = get_video(args, settings, out_dir)
+        else:
+            from .common import session_window
+            _, _, end = session_window(settings, session)
+            if now_kst() < end:
+                try:
+                    video = get_video(args, settings, out_dir)
+                except CaptureError as e:
+                    log.warning("라이브 캡처 실패 — 다시보기로 전환: %s", e)
+                    video = _vod_fallback(settings, session, out_dir)
+                    used_vod_fallback = True
+            else:
+                log.warning("라이브 창(~%s KST)을 이미 지나 다시보기로 전환", end.strftime("%H:%M"))
+                video = _vod_fallback(settings, session, out_dir)
+                used_vod_fallback = True
     except CaptureError as e:
-        log.error("캡처 실패: %s", e)
+        log.error("캡처 실패(라이브+다시보기 모두): %s", e)
         if not args.skip_notify:
             send_alert(
                 f"⚠️ 3tv {label} 캡처 실패 ({now_kst():%m/%d %H:%M})\n{e}\n"
@@ -708,10 +730,15 @@ def run(args: argparse.Namespace) -> int:
     # 8. 전송 (텔레그램 → 카카오, best-effort)
     #    세션당 2건 — ① 시황 ② 종목 기사검색. 한 건에 다 담으면 기사 목록이
     #    본문을 잠식해 읽히지 않았다(2026-07-27 실물 스크린샷 지적).
+    label_suffix = f"{label}" if not used_vod_fallback else f"{label} · 다시보기 기준"
     base = f"📌 {settings['report']['title_prefix']}_{now_kst():%Y%m%d}_{report['title_keyword']}"
+    # 텔레그램은 접힌 버전(news_telegram)을 쓰고, 옵시디안 아카이브(위 news_markdown)는
+    # 접지 않은 news를 쓴다 — 저장본은 나중에 컨텍스트로 재사용될 때 전종목이
+    # 검색돼야 하기 때문(2026-08-09 확정).
     parts = [
-        (f"{base} [{label}]", reports.get("sihwang", "")),
-        (f"{base} [{label} · 종목기사]", reports.get("news", "")),
+        (f"{base} [{label_suffix}]", reports.get("sihwang", "")),
+        (f"{base} [{label_suffix} · 종목기사]",
+         reports.get("news_telegram") or reports.get("news", "")),
     ]
     messages = [f"**{head}**\n\n{body}" for head, body in parts if body.strip()]
     if messages:

@@ -386,20 +386,35 @@ def _parse_sections(text: str) -> dict:
     sihwang = _fold_after(sihwang, US_CTX_MARK, "미국장 참고")
     sihwang = _fold_link_rows(sihwang)
 
-    news_md = _fold_news_rest(sec.get("NEWS", ""))
-    daily = sec.get("DAILY", "").strip()
-    if daily:
-        daily = _fold_top_n(daily, 3, "그 외 이슈")
-        news_md += f"\n\n### 📰 데일리 주요 종목기사 정리\n{daily}"
-    parts = [sihwang] + ([news_md] if news_md else [])
+    news_raw = sec.get("NEWS", "")
+    daily_raw = sec.get("DAILY", "").strip()
+
+    # 저장(옵시디안 아카이브)용 — 접지 않고 전부 남긴다. 이 파일은 나중에 kr 세션이
+    # read_us_section_today()로 다시 읽어 컨텍스트로 쓰는데, 접힌 채로 저장하면
+    # (텔레그램 expandable/옵시디안 callout 문법) 그 재사용 경로에서 종목이 누락된
+    # 것처럼 취급될 위험이 있다(2026-08-09 사용자 확정 — "저장시는 풀고저장해서
+    # 나중요약 학습시에는 전종목 검색되게").
+    news_archive = news_raw
+    if daily_raw:
+        news_archive += f"\n\n### 📰 데일리 주요 종목기사 정리\n{daily_raw}"
+
+    # 텔레그램용 — 상위 항목만 보이고 나머지는 눌러서 펼치는 접기 블록으로.
+    news_telegram = _fold_news_rest(news_raw)
+    if daily_raw:
+        news_telegram += (f"\n\n### 📰 데일리 주요 종목기사 정리\n"
+                          f"{_fold_top_n(daily_raw, 3, '그 외 이슈')}")
+
+    parts = [sihwang] + ([news_archive] if news_archive else [])
     return {
         "title_keyword": (sec.get("TITLE", "").splitlines() or [""])[0].strip(),
         # 하위호환 — 열화 경로·아카이브가 쓰는 통합 본문
         "telegram_text": sec.get("TELEGRAM") or sihwang,
         "markdown_report": "\n\n".join(parts),
         "holdings_mentioned": _parse_holdings_lines(sec.get("HOLDINGS", "")),
-        # LLM 경로는 전사 전문을 본문에 싣지 않으므로 텔레그램용·옵시디안용이 같다
-        "reports": {"sihwang": sihwang, "sihwang_md": sihwang, "news": news_md},
+        # news: 저장용(접지 않음) / news_telegram: 전송용(접힘). 아카이브는 news를
+        # 쓰고, 텔레그램 전송은 news_telegram이 있으면 그걸 우선한다.
+        "reports": {"sihwang": sihwang, "sihwang_md": sihwang,
+                   "news": news_archive, "news_telegram": news_telegram},
     }
 
 
@@ -924,29 +939,41 @@ def _fallback_report(
         bucket.append(head)
         if links:
             bucket.append(f"  🔗 {links}")
-    news_body = "\n".join(head_lines) or "추출 실패(LLM 필요)"
+    # 저장(옵시디안 아카이브)용 — 접지 않고 head/rest를 그대로 이어붙인다(2026-08-09
+    # 확정 — 나중에 read_us_section_today() 등이 재사용할 때 전종목이 검색돼야 함).
+    news_archive_body = "\n".join(head_lines) or "추출 실패(LLM 필요)"
     if rest_lines:
-        news_body += f"\n\n{NEWS_REST_MARK}\n" + "\n".join(rest_lines)
-    news_md = f"### 📈 방송 언급 종목 · 관련 기사\n{_fold_news_rest(news_body)}"
+        news_archive_body += "\n" + "\n".join(rest_lines)
+    news_archive = f"### 📈 방송 언급 종목 · 관련 기사\n{news_archive_body}"
+
+    # 텔레그램용 — 주요종목은 노출, 그 외는 접기
+    news_telegram_body = "\n".join(head_lines) or "추출 실패(LLM 필요)"
+    if rest_lines:
+        news_telegram_body += f"\n\n{NEWS_REST_MARK}\n" + "\n".join(rest_lines)
+    news_telegram = f"### 📈 방송 언급 종목 · 관련 기사\n{_fold_news_rest(news_telegram_body)}"
+
     # LLM이 없어 이슈 단위 요약(===DAILY===)은 만들 수 없다 — 대신 종목별로
     # 실제 기사 원문을 묶어 보여준다(중복 제거·최신순 정렬은 news.py가 이미 처리)
     briefing_grouped = _briefing_grouped(news_briefing)
     if briefing_grouped:
-        news_md += "\n\n### 📰 데일리 기사 정리 (AI 요약 없음 — 종목별 원문 목록)\n" \
-            + tg_format.fold(
-                f"오늘 수집 기사 {len(news_briefing or [])}건 — 눌러서 펼치기",
-                briefing_grouped,
-            )
+        briefing_title = "### 📰 데일리 기사 정리 (AI 요약 없음 — 종목별 원문 목록)\n"
+        news_archive += f"\n\n{briefing_title}{briefing_grouped}"
+        news_telegram += f"\n\n{briefing_title}" + tg_format.fold(
+            f"오늘 수집 기사 {len(news_briefing or [])}건 — 눌러서 펼치기",
+            briefing_grouped,
+        )
 
     log.warning("열화 리포트 생성 (LLM 없이 원자료 기반): %s / 화면 %d장, 지표 %d건, 전사 %d자",
                 label, len(vision_results), len(indices), len(transcript))
     return {
         "title_keyword": "원자료시황",
         "telegram_text": sihwang_md,
-        "markdown_report": f"{sihwang_full}\n\n{news_md}",
+        "markdown_report": f"{sihwang_full}\n\n{news_archive}",
         "holdings_mentioned": holdings_mentioned,
         # sihwang=텔레그램용(발췌) / sihwang_md=옵시디안용(전사 전문)
-        "reports": {"sihwang": sihwang_md, "sihwang_md": sihwang_full, "news": news_md},
+        # news=저장용(접지 않음) / news_telegram=전송용(접힘)
+        "reports": {"sihwang": sihwang_md, "sihwang_md": sihwang_full,
+                   "news": news_archive, "news_telegram": news_telegram},
     }
 
 
