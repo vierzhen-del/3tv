@@ -290,6 +290,33 @@ def _parse_holdings_lines(block: str) -> list[dict]:
     return holdings
 
 
+_ITEM_START_RE = re.compile(r"^•\s")
+
+
+def _fold_top_n(md: str, n: int, title: str) -> str:
+    """상위 `n`개 항목(`•`로 시작하는 줄 + 뒤따르는 비-`•` 줄)만 본문에 남기고
+    나머지는 접기 블록으로 내린다.
+
+    데일리 정리(===DAILY===)처럼 LLM이 별도 마커를 찍지 않는 섹션용 — 항목 순서
+    자체가 이미 중요도순(프롬프트가 "상위 6~8개, 중요도 순"으로 요청)이라, 개수만
+    세어 자르면 되고 LLM의 마커 준수 여부에 기대지 않아도 된다(2026-08-09,
+    "top3 제외 접기" 요청).
+    """
+    lines = md.splitlines()
+    items: list[list[str]] = []
+    for line in lines:
+        if _ITEM_START_RE.match(line):
+            items.append([line])
+        elif items:
+            items[-1].append(line)
+        # 첫 항목 전의 잡음(빈 줄 등)은 버린다 — DAILY/NEWS는 항상 불릿으로 시작
+    if len(items) <= n:
+        return md
+    head = "\n".join(chr(10).join(item) for item in items[:n])
+    rest = "\n".join(chr(10).join(item) for item in items[n:])
+    return f"{head}\n\n{tg_format.fold(f'{title} ({len(items) - n}건 더) — 눌러서 펼치기', rest)}"
+
+
 def _fold_news_rest(news_md: str) -> str:
     """기사 섹션의 `---기타---` 이후를 접기 블록으로.
 
@@ -362,6 +389,7 @@ def _parse_sections(text: str) -> dict:
     news_md = _fold_news_rest(sec.get("NEWS", ""))
     daily = sec.get("DAILY", "").strip()
     if daily:
+        daily = _fold_top_n(daily, 3, "그 외 이슈")
         news_md += f"\n\n### 📰 데일리 주요 종목기사 정리\n{daily}"
     parts = [sihwang] + ([news_md] if news_md else [])
     return {

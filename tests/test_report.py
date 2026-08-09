@@ -413,6 +413,49 @@ def test_report_split_into_sihwang_and_news(tmp_path, monkeypatch):
     assert data["holdings_mentioned"][0]["mentioned"] is True
 
 
+def test_fold_top_n_keeps_head_folds_rest():
+    """상위 n개 항목만 본문에 남고 나머지는 접기 블록으로."""
+    items = "\n".join(
+        f"• **이슈{i}** — 요약\n  🔗 [기사{i}](https://n/{i})" for i in range(1, 6)
+    )
+    out = report_mod._fold_top_n(items, 3, "그 외 이슈")
+    assert "이슈1" in out and "이슈2" in out and "이슈3" in out
+    assert out.index("이슈3") < out.index(tg_format.FOLD_OPEN)   # 상위 3개는 접기 밖
+    assert tg_format.FOLD_OPEN in out
+    assert "이슈4" in out and "이슈5" in out                     # 나머지는 접힌 채로 존재
+
+
+def test_fold_top_n_noop_when_within_limit():
+    """항목이 n개 이하면 접지 않는다."""
+    items = "• **이슈1** — 요약\n• **이슈2** — 요약"
+    out = report_mod._fold_top_n(items, 3, "그 외 이슈")
+    assert out == items
+    assert tg_format.FOLD_OPEN not in out
+
+
+def test_daily_section_folds_after_top_3(tmp_path, monkeypatch):
+    """===DAILY=== 도 상위 3개만 노출되고 나머지는 접힌다(2026-08-09 요청)."""
+    daily_issues = "\n".join(
+        f"• **이슈{i}** — 요약\n  🔗 [기사{i}](https://n/{i})" for i in range(1, 6)
+    )
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: f"""===TITLE===
+반도체급등
+===SIHWANG===
+## 📌 요약
+• 나스닥 강세
+===NEWS===
+• **엔비디아**: 급등
+===DAILY===
+{daily_issues}
+===HOLDINGS===
+===END===""")
+    data = _generate(tmp_path, transcript="")
+    news = data["reports"]["news"]
+    assert "이슈1" in news and "이슈3" in news
+    assert tg_format.FOLD_OPEN in news
+    assert "이슈5" in news       # 접힌 채로 본문에는 남아있음(펼치면 보임)
+
+
 def test_verbatim_caps_very_long_screen(tmp_path, llm_down):
     """시세 표처럼 줄이 많은 화면은 상위 일부만 — 다른 섹션을 밀어내면 안 된다.
 
