@@ -108,6 +108,41 @@ def test_split_plaintext_unchanged():
     assert "".join(c.replace("\n", "") for c in chunks) == text.replace("\n", "")
 
 
+class _FakeResp:
+    def __init__(self, status=200, text=""):
+        self.status_code = status
+        self.text = text
+
+
+def test_send_telegram_fans_out_to_comma_separated_chat_ids(monkeypatch):
+    """TELEGRAM_CHAT_ID에 콤마로 여러 id를 넣으면 각 방에 모두 보내야 한다
+    (기존 대상 유지 + 새 단체방 추가 시나리오)."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "111, -100222")
+    seen = []
+
+    def fake_post(url, json=None, timeout=None):
+        seen.append(json["chat_id"])
+        return _FakeResp(200)
+
+    monkeypatch.setattr(tg.requests, "post", fake_post)
+    assert tg.send_telegram("hello") is True
+    assert seen == ["111", "-100222"]
+
+
+def test_send_telegram_single_chat_id_still_works(monkeypatch):
+    """콤마 없는 기존 단일 chat id 설정은 그대로 동작해야 한다(회귀 방지)."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "111")
+    seen = []
+    monkeypatch.setattr(
+        tg.requests, "post",
+        lambda url, json=None, timeout=None: seen.append(json["chat_id"]) or _FakeResp(200),
+    )
+    assert tg.send_telegram("hello") is True
+    assert seen == ["111"]
+
+
 def test_strip_tags_keeps_url_visible():
     """HTML 파싱 실패 시 평문 폴백 — 링크는 'text (url)'로 살아남는다."""
     out = tg._strip_tags('<b>제목</b> <a href="https://a.b/1">기사</a> &amp; 끝')
