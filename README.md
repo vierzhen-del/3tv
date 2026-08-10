@@ -91,6 +91,7 @@ capture (yt-dlp+ffmpeg 라이브 녹화, 480p)
 | `ANTHROPIC_API_KEY` | ✅ | https://console.anthropic.com 에서 발급 (리포트 생성) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | 기존 3protv 알림봇 토큰 재사용 가능 |
 | `TELEGRAM_CHAT_ID` | ✅ | 수신자/채널 chat id |
+| `TELEGRAM_GROUP_CHAT_ID` | 선택 | 같은 리포트를 **다른 사람이 있는 그룹방에도 동시 발송**하고 싶을 때만. 봇을 그 그룹에 초대한 뒤 `@userinfobot`으로 그룹 chat id(음수)를 확인해 등록. 카카오와 달리 텔레그램은 봇을 대화방에 초대하기만 하면 개인정보 인증 없이 바로 가능 |
 | `YOUTUBE_COOKIES` | 권장 | 유튜브 봇차단 대응 (아래 참고) |
 | `KRX_ID` / `KRX_PW` | 권장 | data.krx.co.kr 회원 계정 — pykrx 인증 요청용. 미설정 시 익명 요청으로 폴백되어 **국내 종목(삼성전자·SK하이닉스) 시세가 비는 경우가 많음** |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 권장 | 네이버 검색 API (무료 **하루 25,000건**) — 종목별 관련 기사 링크 + 📰 뉴스 브리핑. 미설정 시 검색 링크만 제공 (아래 참고) |

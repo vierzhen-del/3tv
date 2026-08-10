@@ -30,6 +30,7 @@ description: 3tv 파이프라인 실패 진단 — GitHub cron 지연, Secrets �
 | `GEMINI_API_KEY` | 등록 완료 |
 | `ANTHROPIC_API_KEY` | 등록됐으나 **크레딧 0** — 사용자 확정: 충전 없이 Gemini 전용 운영 |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 등록 완료 |
+| `TELEGRAM_GROUP_CHAT_ID` | 선택 — 그룹방 동시발송용. 넣으면 개인 채팅과 **양쪽 모두** 발송(미설정 시 종전대로 개인만) |
 | `KRX_ID` / `KRX_PW` | 등록 완료(2026-07-19) |
 | `YOUTUBE_COOKIES` | 등록 완료 |
 | `KAKAO_REST_API_KEY` / `KAKAO_REFRESH_TOKEN` | 등록 완료(2026-07-19) |

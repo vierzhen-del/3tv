@@ -9,12 +9,18 @@ from .common import env_token, log
 
 
 def send_telegram(text: str, max_len: int = 4000, html: bool = False) -> bool:
-    """텔레그램 전송.
+    """텔레그램 전송 — 개인 채팅 + (설정 시) 다른 사람이 있는 그룹방에 동시 발송.
 
     html=True면 parse_mode=HTML로 보낸다 — 링크가 제목만 보이고(긴 URL 숨김),
     `<blockquote expandable>` 접기 블록이 눌러서 펼쳐진다(Bot API 7.3+).
     HTML 파싱이 실패하면(태그 깨짐 등) 그 조각만 평문으로 1회 재전송해
     메시지를 통째로 잃지 않는다.
+
+    ⚠️ TELEGRAM_GROUP_CHAT_ID(선택)를 넣으면 같은 내용을 그 chat_id에도 보낸다.
+    봇을 그 그룹/채널에 초대한 뒤 chat_id를 알아내(예: @userinfobot, 또는
+    getUpdates 응답의 message.chat.id — 그룹은 음수) secret으로 등록하면 된다.
+    그룹 발송은 best-effort다 — 실패해도 개인 채팅 발송 결과(반환값)에는 영향 없음
+    (카카오와 달리 텔레그램 봇은 API로 어느 대화방이든 초대만 되면 보낼 수 있다).
     """
     token = env_token("TELEGRAM_BOT_TOKEN")
     # 기존 v28 .env 호환: TELEGRAM_CHAT_ID 없으면 TELEGRAM_NOTIFY_CHANNEL 사용
@@ -23,6 +29,18 @@ def send_telegram(text: str, max_len: int = 4000, html: bool = False) -> bool:
         log.warning("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 미설정 — 텔레그램 전송 생략")
         return False
 
+    ok = _send_to_chat(token, chat_id, text, max_len, html)
+
+    group_chat_id = env_token("TELEGRAM_GROUP_CHAT_ID")
+    if group_chat_id:
+        if not _send_to_chat(token, group_chat_id, text, max_len, html):
+            log.warning("텔레그램 그룹방(TELEGRAM_GROUP_CHAT_ID) 전송 실패 — 개인 채팅 결과는 별개")
+
+    return ok
+
+
+def _send_to_chat(token: str, chat_id: str, text: str, max_len: int, html: bool) -> bool:
+    """한 chat_id에 분할·HTML 폴백까지 처리해 전송."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     ok = True
     for chunk in _split(text, max_len, html=html):
@@ -34,16 +52,17 @@ def send_telegram(text: str, max_len: int = 4000, html: bool = False) -> bool:
 
         if resp.status_code != 200 and html:
             # 파싱 실패 추정 → 태그를 벗겨 평문으로 한 번 더 (내용 유실 방지)
-            log.warning("텔레그램 HTML 파싱 실패(%d) → 평문 재전송: %s",
-                        resp.status_code, resp.text[:200])
+            log.warning("텔레그램 HTML 파싱 실패(%d, chat_id=%s) → 평문 재전송: %s",
+                        resp.status_code, chat_id, resp.text[:200])
             resp = requests.post(
                 url, json={"chat_id": chat_id, "text": _strip_tags(chunk)}, timeout=30
             )
         if resp.status_code != 200:
-            log.error("텔레그램 전송 실패 %d: %s", resp.status_code, resp.text[:300])
+            log.error("텔레그램 전송 실패 %d (chat_id=%s): %s",
+                       resp.status_code, chat_id, resp.text[:300])
             ok = False
     if ok:
-        log.info("텔레그램 전송 완료%s", " (HTML)" if html else "")
+        log.info("텔레그램 전송 완료%s (chat_id=%s)", " (HTML)" if html else "", chat_id)
     return ok
 
 
