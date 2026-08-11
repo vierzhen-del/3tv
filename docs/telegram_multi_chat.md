@@ -20,22 +20,65 @@
 
 **A. getUpdates로 직접 확인 (권장, 추가 봇 불필요)**
 
-1. 봇을 초대한 단체방에 아무 메시지나 하나 보냅니다(예: "테스트").
-2. 브라우저나 curl로 아래 URL을 엽니다 (`<TOKEN>`은 `TELEGRAM_BOT_TOKEN` 값):
+1. **봇 토큰(`TELEGRAM_BOT_TOKEN`) 값을 손에 쥔다.**
+   GitHub Actions Secrets는 **한 번 저장하면 값을 다시 조회할 수 없습니다** — 값 자체는
+   Settings → Secrets 화면에서도 안 보입니다. 아래 중 하나에서 원본을 찾으세요:
+   - 로컬 `.env` 파일의 `TELEGRAM_BOT_TOKEN=` 줄
+   - 봇을 만들 때 [@BotFather](https://t.me/BotFather)와 나눈 대화 (토큰이 그대로 남아 있음)
+   - 비밀번호 관리자 등에 별도로 적어뒀다면 거기서
+
+2. **봇을 초대한 단체방에 아무 메시지나 하나 보냅니다** (예: "테스트"). 이 메시지가 있어야
+   getUpdates 응답에 그 방 정보가 뜹니다.
+
+3. **브라우저 주소창에 아래 URL을 그대로 붙여넣고 엽니다** (`<TOKEN>` 자리를 1번 토큰으로
+   교체 — GET 요청 1회일 뿐이라 열어보는 것만으로는 아무 것도 바뀌지 않습니다):
    ```
    https://api.telegram.org/bot<TOKEN>/getUpdates
    ```
-3. 응답 JSON에서 방금 보낸 메시지의 `"chat":{"id": -1009876543210, "type":"group", ...}`를 찾습니다.
-   `id` 값이 그 방의 chat id입니다.
-4. 응답이 비어 있으면 Privacy Mode 때문에 봇이 그 메시지를 못 받은 것입니다 — 방 관리자 →
-   봇 권한에서 메시지 읽기를 허용하거나, [@BotFather](https://t.me/BotFather)에서
-   `/setprivacy` → 해당 봇 선택 → **Disable**로 바꾼 뒤 다시 시도하세요.
+   curl로도 동일합니다: `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"`
+
+4. **응답 JSON에서 방금 보낸 메시지 항목을 찾습니다.** 형태는 대략 이렇습니다:
+   ```json
+   {
+     "ok": true,
+     "result": [
+       {
+         "update_id": 123456789,
+         "message": {
+           "message_id": 42,
+           "text": "테스트",
+           "chat": {
+             "id": -1009876543210,
+             "title": "우리집단투자방",
+             "type": "supergroup"
+           }
+         }
+       }
+     ]
+   }
+   ```
+   `result` 배열 안 `message.chat.id`가 그 방의 chat id입니다 (`title`로 어느 방인지
+   확인). 봇이 여러 방에 있으면 배열에 여러 건이 섞여 나올 수 있으니 `title`을 보고
+   원하는 방 것을 고르세요. **부호(`-`)까지 포함해서** 복사합니다 — 그룹/슈퍼그룹 id는
+   항상 음수입니다 (`type`이 `group`이면 `-...`, `supergroup`이면 보통 `-100...`).
+
+5. **`"result": []`로 비어 있으면** 아래 순서로 확인하세요:
+   - **Privacy Mode**: 기본적으로 봇은 단체방의 일반 메시지를 못 읽습니다(멘션·명령어만
+     받음). [@BotFather](https://t.me/BotFather) DM에서 `/mybots` → 해당 봇 선택 →
+     **Bot Settings → Group Privacy → Turn off**로 끈 뒤, 방에서 메시지를 다시 보내고
+     getUpdates를 재호출하세요. (Privacy Mode를 꺼도 메시지 *발신*은 원래도 가능했으므로
+     리포트 발송 자체엔 영향 없습니다 — 이건 chat id 확인용으로만 잠깐 필요합니다.)
+   - **오프셋 소진**: getUpdates는 한 번 읽은 업데이트를 다시 안 보여줄 수 있습니다.
+     이미 한 번 호출했는데 그 사이 새 메시지가 없다면 방에 메시지를 하나 더 보내고
+     다시 호출하세요.
+   - **봇이 실제로 그 방에 있는지**: 방 멤버 목록에서 봇 이름이 보이는지 재확인하세요.
 
 **B. 확인용 봇 사용 (더 간단하지만 추가 봇 필요)**
 
 [@RawDataBot](https://t.me/RawDataBot) 또는 [@userinfobot](https://t.me/userinfobot)을 같은
-단체방에 잠깐 초대하면 입장 즉시 방 정보(그 안의 `chat.id`)를 메시지로 보여줍니다. 확인 후
-이 봇은 방에서 빼도 됩니다.
+단체방에 잠깐 초대하면 입장 즉시 방 정보(그 안의 `chat.id`)를 메시지로 보여줍니다. Privacy
+Mode 설정을 안 건드려도 되는 대신, 알림봇 외 낯선 봇을 잠깐이라도 방에 들이는 셈이니 확인 후
+바로 내보내세요.
 
 ## 3. TELEGRAM_CHAT_ID 값 갱신
 
