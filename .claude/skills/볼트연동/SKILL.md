@@ -23,7 +23,7 @@ description: 리포트가 옵시디안 볼트까지 도달하는 경로(3tv-repo
 |---|---|---|
 | 1 | `GH_PAT` 이 살아있나 | 3tv Actions → **vault-check** 워크플로 수동 실행. FAIL이면 여기서 끝 — PAT 재발급 |
 | 2 | 리포트가 중계 repo에 올라왔나 | `3tv-reports` 의 `3protv/YYYY/MM/` 에 오늘 날짜 md 2개(`3protv오늘_*`, `3protv기사_*`) |
-| 3 | n8n이 받아갔나 | Tab S9 n8n → 해당 워크플로 Executions 탭 |
+| 3 | n8n이 받아갔나 | Tab S9 n8n → 해당 워크플로 Executions 탭. **`success`만 보지 말고 어느 분기를 탔는지 확인** — 아래 2026-08-11 사고 참고 |
 | 4 | Syncthing이 전파했나 | S9 `/storage/emulated/0/Documents/vierzhen_home/3protv/` → S26 |
 
 ## ⚠️ GH_PAT 만료는 예전엔 침묵 실패였다 (2026-07-27 사고)
@@ -37,6 +37,33 @@ best-effort라 실패해도 호출부가 반환값을 안 봤고, 텔레그램�
 - n8n 쪽도 오늘 날짜 md가 0건이면 09:40 슬롯에서 텔레그램 경고
 
 즉 **이제는 조용히 실패하지 않는다.** 경고 없이 "안 보인다"면 볼트/Syncthing 구간(위 표 3~4번)을 먼저 의심할 것.
+
+## 🔴 n8n write 단계가 사실상 한 번도 성공한 적이 없었다 (2026-08-11 사고, 수정 완료)
+
+3~4번(n8n/Syncthing) 진단을 실제로 파봤더니 **"RaeVault에 저장" 노드가 매번
+`ENOENT: no such file or directory, open '/root/obsidian/3protv/2026/08/...'`로
+죽고 있었다.** 원인은 `n8n-nodes-base.readWriteFile`의 write 오퍼레이션이
+**상위 폴더를 자동 생성하지 않는다**는 것 — `3protv/2026/08/` 디렉토리 자체가
+한 번도 만들어진 적이 없었다.
+
+Executions 탭에서 과거 실행이 `success`로 보인 날들도 속아 넘어가기 쉽다 — 실제로는
+그날 리포트가 아직 안 올라와서 "누락?" 분기(텔레그램 경고만 보내고 끝)를 탄 것뿐이었고,
+**파일이 실제로 존재해서 다운로드→저장 경로를 탄 날은 전부 ENOENT로 죽어 있었다.**
+즉 이 워크플로는 만들어진 이후 지금까지 볼트에 파일을 저장하는 데 **단 한 번도**
+성공한 적이 없다 — `3tv-reports`(중계 repo, GitHub)엔 항상 정상 도착했지만
+그 다음 로컬 저장 단계에서 전부 막혀 있었다.
+
+**수정**: "md 다운로드" → "RaeVault에 저장" 사이에 Code 노드를 추가해 쓰기 전에
+`fs.mkdirSync(path.dirname(target), {recursive:true})`로 상위 폴더를 미리 만든다.
+`docs/n8n_3tv_sync_workflow.json`에 이 노드를 반영해 뒀다 — **재import해도 이 버그가
+되살아나지 않는다.** (기존 활성 워크플로에 이미 실기기에서 수동 패치를 적용했다면
+n8n UI 쪽이 최신이니 굳이 재import할 필요는 없다. 단, 이후 다시 import하게 되는
+경우를 대비해 JSON 원본도 같이 고쳐 둔 것.)
+
+**교훈**: n8n Executions의 `success` 표시는 "그 실행에서 도달한 마지막 분기가
+정상 종료됐다"는 뜻이지 "리포트가 실제로 저장됐다"는 뜻이 아니다. 진단 시
+success 여부만 보지 말고 **어느 분기를 탔는지**(다운로드+저장 경로였는지, 누락
+경고 경로였는지)까지 확인할 것.
 
 ## ⚠️ 「옵시디안에서 열기」 딥링크는 걷어냈다 (2026-08-02)
 

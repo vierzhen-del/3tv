@@ -46,6 +46,23 @@ GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KS
 - **09:40 슬롯에서만** 보냅니다 — 07:10 시점엔 kr 병합본이 아직 없는 게 정상이라, 그때 경고하면 매일 오탐이 납니다. 판단은 "오늘 경로 계산" 노드가 내려주는 `hour` 값으로 합니다.
 - `3protv/2026/07` 폴더 자체가 없으면 GitHub API가 **404**를 주는데, "파일 목록 조회" 노드의 `neverError` 옵션이 이를 정상 응답으로 받아 넘겨 흐름이 끊기지 않게 합니다. (2026-07-27 사고 당시엔 이 404에서 워크플로가 조용히 멈췄습니다.)
 
+### 🔴 write 단계가 볼트 쪽 폴더 미생성으로 매번 죽고 있었다 (2026-08-11 사고)
+
+`readWriteFile`의 write 오퍼레이션은 **상위 폴더를 자동 생성하지 않습니다.** 그 달 처음
+저장되는 시점에 `/root/obsidian/3protv/YYYY/MM/`이 없으면 `ENOENT`로 죽습니다 — 이
+워크플로가 생긴 이후 **다운로드+저장 경로를 탄 날은 전부 이 오류로 실패**했고, Executions에
+`success`로 보인 날들은 전부 "누락?" 분기(리포트가 아직 안 올라와 경고만 보내고 끝)만 탄
+것이었습니다. 즉 볼트에 파일이 실제로 저장된 적이 사실상 없었습니다.
+
+**수정**: "md 다운로드"와 "RaeVault에 저장" 사이에 **"저장 폴더 생성" Code 노드**를 추가해
+`fs.mkdirSync(path.dirname(target), {recursive:true})`로 쓰기 전에 상위 폴더를 만듭니다.
+아래 노드 구조 표와 `n8n_3tv_sync_workflow.json`에 반영돼 있습니다. **재import 시 이 노드가
+같이 들어오므로 다시 이 버그로 돌아가지 않습니다.**
+
+교훈: Executions의 `success`는 "그 실행이 끝까지 정상 종료됐다"는 뜻이지 "리포트가
+실제로 저장됐다"는 뜻이 아닙니다. 어느 분기를 탔는지(다운로드 경로 vs 누락 경고 경로)까지
+확인해야 합니다.
+
 ## 수동 구성 시 노드 구조 (import가 안 될 때)
 
 | # | 노드 | 설정 |
@@ -57,7 +74,8 @@ GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KS
 | 5 | IF (누락?) | 조건: `{{ $json.missing }}` is true → 출력 0(참)=경고, 출력 1(거짓)=다운로드 |
 | 6 | HTTP Request (텔레그램 경고) | POST `https://api.telegram.org/bot<TOKEN>/sendMessage`, JSON body `{chat_id, text}` |
 | 7 | HTTP Request (다운로드) | GET `{{download_url}}`, Header 동일, Response: **File** |
-| 8 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/3protv/{yyyy}/{mm}/{name}` |
+| 8 | Code (저장 폴더 생성) | `fs.mkdirSync(path.dirname(target), {recursive:true})` — 2026-08-11 ENOENT 사고 수정, **빠뜨리면 write가 매번 죽음** |
+| 9 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/3protv/{yyyy}/{mm}/{name}` |
 
 2번 Code 노드 스니펫:
 ```javascript
