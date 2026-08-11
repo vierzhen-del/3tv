@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from threetv.common import load_env, load_settings, log, now_kst, setup_logging  # noqa: E402
 from threetv.notify_telegram import send_alert  # noqa: E402
-from threetv.obsidian_archive import VAULT_TMP, _clone_vault  # noqa: E402
+from threetv.obsidian_archive import VAULT_TMP, _clone_vault, remediation  # noqa: E402
 
 
 def _fail(msg: str, alert: bool) -> int:
@@ -34,7 +34,7 @@ def _fail(msg: str, alert: bool) -> int:
             f"⚠️ 3tv 볼트 push 점검 실패 ({now_kst():%m/%d %H:%M})\n"
             f"사유: {msg}\n\n"
             "이대로 두면 매일 아침 리포트가 옵시디안(탭S9·S26)에 올라가지 않습니다.\n"
-            "조치: GH_PAT 재발급 후 vault-check 워크플로를 다시 실행하세요."
+            f"조치: {remediation(msg)}"
         )
     return 1
 

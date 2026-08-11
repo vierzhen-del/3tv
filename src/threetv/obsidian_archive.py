@@ -129,6 +129,26 @@ def _clone_reason(stderr: str) -> str:
     return f"clone 실패({_CLONE_RETRIES}회 재시도 후): {stderr.strip()[-200:]}"
 
 
+def remediation(reason: str) -> str:
+    """`_clone_reason`이 돌려준 실패 사유별로 다른 조치를 안내한다.
+
+    전부 "GH_PAT 재발급"으로 뭉치면 SSL 같은 무관한 원인에도 잘못된 안내가
+    나간다(2026-08-12 실측: 인증서 검증 실패인데 재발급 안내가 나갔던 사고).
+    main.py의 여러 세션(us/kr·noon·night·etf)과 scripts/check_vault_push.py가
+    전부 이 함수를 공유한다 — 따로 두면 한쪽만 고치고 나머지는 놓치기 쉽다.
+
+    ⚠️ SSL/타임아웃 케이스를 먼저 체크할 것 — 그 설명 문구 자체에 "GH_PAT과 무관"처럼
+    "GH_PAT"이라는 글자가 들어가서, 순서를 바꾸면 부분 문자열 매칭에 걸려 다시
+    잘못 분류된다(이 함수를 만들다가 실제로 한 번 겪은 버그)."""
+    if "SSL" in reason or "인증서" in reason:
+        return "조치 불필요할 가능성 높음(러너 일시 장애, 자동 재시도 적용됨) — 반복되면 https://www.githubstatus.com 확인"
+    if "타임아웃" in reason or "네트워크" in reason:
+        return "일시적 네트워크 문제로 보임 — 다음 세션에서 자동 재시도됨, 반복되면 확인 필요"
+    if "GH_PAT" in reason or "인증 실패" in reason:
+        return "GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인"
+    return "3tv Actions의 vault-check 워크플로 수동 실행으로 원인 확인"
+
+
 def _today_file(vault: Path, base_path: str, keyword: str, date: datetime) -> Path:
     """오늘 날짜 파일 경로. 이미 있으면(us 세션이 만든) 기존 파일 재사용."""
     ymd = date.strftime("%Y%m%d")

@@ -39,7 +39,7 @@ from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
 from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
                                archive_simple_report, read_night_slots,
-                               read_us_section_today, save_night_slot,
+                               read_us_section_today, remediation, save_night_slot,
                                vault_location_link, vault_location_url)
 from .report import (drop_etf_stocks, extract_mentions, generate_etf_review,
                      generate_night_digest,
@@ -338,8 +338,7 @@ def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
         if not args.skip_notify:
-            send_alert(f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n사유: {archived.reason}\n"
-                       "· 텔레그램/카카오 리포트는 정상 발송됐습니다.")
+            send_alert(_vault_alert(label, archived.reason))
         return 1
 
     log.info("=== %s 세션 완료 ===", label)
@@ -423,7 +422,7 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
         if not args.skip_notify:
             send_alert(
                 f"⚠️ 3tv {label} 종합 실패 ({now_kst():%m/%d %H:%M})\n사유: {reason}\n"
-                "슬롯 job이 전부 실패했거나 GH_PAT 문제일 수 있습니다."
+                f"조치: {remediation(reason)}"
             )
         return 1
     if len(slots) < n_slots:
@@ -457,8 +456,7 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
         if not args.skip_notify:
-            send_alert(f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n사유: {archived.reason}\n"
-                       "· 텔레그램/카카오 리포트는 정상 발송됐습니다.")
+            send_alert(_vault_alert(label, archived.reason))
         return 1
 
     log.info("=== %s 종합 완료 ===", label)
@@ -538,8 +536,7 @@ def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
         if not args.skip_notify:
-            send_alert(f"⚠️ 3tv ETF 리뷰 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n"
-                       f"사유: {archived.reason}\n· 텔레그램/카카오는 정상 발송됐습니다.")
+            send_alert(_vault_alert("ETF 리뷰", archived.reason))
         return 1
 
     log.info("=== ETF 포트폴리오 리뷰 완료 (%d종) ===", len(results))
@@ -786,25 +783,8 @@ def _vault_alert(label: str, reason: str, us_context_problem: str = "") -> str:
     ]
     if us_context_problem:
         lines.append(f"· kr 리포트가 미장 컨텍스트 없이 생성됨: {us_context_problem}")
-    lines += ["", f"조치: {_remediation(reason)}"]
+    lines += ["", f"조치: {remediation(reason)}"]
     return "\n".join(lines)
-
-
-def _remediation(reason: str) -> str:
-    """사유별로 다른 조치 — 전부 "GH_PAT 재발급"으로 뭉치면 SSL 같은 무관한
-    원인에도 잘못된 안내가 나간다(2026-08-12 실측: 인증서 검증 실패인데
-    재발급 안내가 나갔던 사고).
-
-    ⚠️ SSL/타임아웃 케이스를 먼저 체크할 것 — 그 설명 문구 자체에 "GH_PAT과 무관"처럼
-    "GH_PAT"이라는 글자가 들어가서, 순서를 바꾸면 부분 문자열 매칭에 걸려 다시
-    잘못 분류된다(이 함수를 고치다가 실제로 한 번 겪은 버그)."""
-    if "SSL" in reason or "인증서" in reason:
-        return "조치 불필요할 가능성 높음(러너 일시 장애, 자동 재시도 적용됨) — 반복되면 https://www.githubstatus.com 확인"
-    if "타임아웃" in reason or "네트워크" in reason:
-        return "일시적 네트워크 문제로 보임 — 다음 세션에서 자동 재시도됨, 반복되면 확인 필요"
-    if "GH_PAT" in reason or "인증 실패" in reason:
-        return "GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인"
-    return "3tv Actions의 vault-check 워크플로 수동 실행으로 원인 확인"
 
 
 def main() -> int:
