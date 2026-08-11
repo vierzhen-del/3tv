@@ -150,16 +150,31 @@
       }
     },
     {
-      "id": "download",
-      "name": "md 다운로드",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "mkdirp",
+      "name": "저장 폴더 생성",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
       "position": [
         980,
         100
       ],
       "parameters": {
-        "url": "={{ $json.download_url }}",
+        "command": "=mkdir -p \"$(dirname \"{{ $json.target }}\")\""
+      },
+      "notesInFlow": true,
+      "notes": "2026-08-11: 처음엔 Code 노드 + require('fs')로 시도했으나 이 n8n 인스턴스의 Code 노드 샌드박스가 fs/path를 막아 죽었다(second-brain 워크플로에서 통했던 방식이 여기선 안 통함). Execute Command는 샌드박스를 타지 않고 셸에서 직접 실행되므로 이 방식으로 교체. 'md 다운로드'(바이너리 응답) 뒤가 아니라 앞에 배치한 이유는 아래 참고."
+    },
+    {
+      "id": "download",
+      "name": "md 다운로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        100
+      ],
+      "parameters": {
+        "url": "={{ $('오늘 파일 필터').item.json.download_url }}",
         "options": {
           "response": {
             "response": {
@@ -180,20 +195,9 @@
             }
           ]
         }
-      }
-    },
-    {
-      "id": "mkdirp",
-      "name": "저장 폴더 생성",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1180,
-        100
-      ],
-      "parameters": {
-        "jsCode": "// 2026-08-11 사고: readWriteFile의 write 오퍼레이션은 상위 폴더를 자동\n// 생성하지 않는다. 3protv/YYYY/MM/ 폴더가 그 달 처음 저장될 때 없으면\n// ENOENT로 죽는다 — 이 노드가 만들어진 이후 사실상 매번 이 경로로 죽어\n// 있었다(Executions엔 '누락' 분기만 success로 보여 안 드러났음).\nconst fs = require('fs');\nconst path = require('path');\nconst target = $('오늘 파일 필터').item.json.target;\nfs.mkdirSync(path.dirname(target), { recursive: true });\nreturn $input.item;"
-      }
+      },
+      "notesInFlow": true,
+      "notes": "url을 $json.download_url 대신 $('오늘 파일 필터').item.json.download_url로 명시 참조 — 앞에 '저장 폴더 생성' 노드가 끼어들어도(그 노드의 출력 json은 stdout/exitCode뿐) 안 깨지도록."
     },
     {
       "id": "writefile",
@@ -208,7 +212,9 @@
         "operation": "write",
         "fileName": "={{ $('오늘 파일 필터').item.json.target }}",
         "dataPropertyName": "data"
-      }
+      },
+      "notesInFlow": true,
+      "notes": "'md 다운로드' 바로 뒤에 이어붙여서 binary.data가 그대로 전달되게 한다 — Execute Command 노드는 입력 binary를 보존하지 않으므로 write 노드와 다운로드 노드 사이에 끼우면 안 됨."
     }
   ],
   "connections": {
@@ -267,17 +273,6 @@
         ],
         [
           {
-            "node": "md 다운로드",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "md 다운로드": {
-      "main": [
-        [
-          {
             "node": "저장 폴더 생성",
             "type": "main",
             "index": 0
@@ -286,6 +281,17 @@
       ]
     },
     "저장 폴더 생성": {
+      "main": [
+        [
+          {
+            "node": "md 다운로드",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "md 다운로드": {
       "main": [
         [
           {

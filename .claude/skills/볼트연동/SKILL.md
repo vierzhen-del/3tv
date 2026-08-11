@@ -38,7 +38,7 @@ best-effort라 실패해도 호출부가 반환값을 안 봤고, 텔레그램�
 
 즉 **이제는 조용히 실패하지 않는다.** 경고 없이 "안 보인다"면 볼트/Syncthing 구간(위 표 3~4번)을 먼저 의심할 것.
 
-## 🔴 n8n write 단계가 사실상 한 번도 성공한 적이 없었다 (2026-08-11 사고, 수정 완료)
+## 🔴 n8n write 단계가 사실상 한 번도 성공한 적이 없었다 (2026-08-11 사고, 구조 수정 완료·실행 검증 대기)
 
 3~4번(n8n/Syncthing) 진단을 실제로 파봤더니 **"RaeVault에 저장" 노드가 매번
 `ENOENT: no such file or directory, open '/root/obsidian/3protv/2026/08/...'`로
@@ -53,17 +53,34 @@ Executions 탭에서 과거 실행이 `success`로 보인 날들도 속아 넘�
 성공한 적이 없다 — `3tv-reports`(중계 repo, GitHub)엔 항상 정상 도착했지만
 그 다음 로컬 저장 단계에서 전부 막혀 있었다.
 
-**수정**: "md 다운로드" → "RaeVault에 저장" 사이에 Code 노드를 추가해 쓰기 전에
-`fs.mkdirSync(path.dirname(target), {recursive:true})`로 상위 폴더를 미리 만든다.
-`docs/n8n_3tv_sync_workflow.json`에 이 노드를 반영해 뒀다 — **재import해도 이 버그가
-되살아나지 않는다.** (기존 활성 워크플로에 이미 실기기에서 수동 패치를 적용했다면
-n8n UI 쪽이 최신이니 굳이 재import할 필요는 없다. 단, 이후 다시 import하게 되는
-경우를 대비해 JSON 원본도 같이 고쳐 둔 것.)
+**1차 시도(실패)**: "md 다운로드" → "RaeVault에 저장" 사이에 Code 노드를 추가해
+`fs.mkdirSync(path.dirname(target), {recursive:true})`를 시도했으나, 이 n8n 인스턴스의
+Code 노드 샌드박스가 `require('fs')`를 막고 있어 **또 다른 이유로 죽었다** — second-brain
+워크플로에서 통했던 방식이 이 인스턴스에서도 통할 거라 가정한 게 틀렸다. n8n의
+`NODE_FUNCTION_ALLOW_BUILTIN` 허용 모듈은 인스턴스별 설정이라 워크플로 간에 이식되지
+않는다.
 
-**교훈**: n8n Executions의 `success` 표시는 "그 실행에서 도달한 마지막 분기가
-정상 종료됐다"는 뜻이지 "리포트가 실제로 저장됐다"는 뜻이 아니다. 진단 시
-success 여부만 보지 말고 **어느 분기를 탔는지**(다운로드+저장 경로였는지, 누락
-경고 경로였는지)까지 확인할 것.
+**2차 시도(구조 검증 완료)**: Code 노드 대신 **Execute Command 노드**로 교체해
+`mkdir -p "$(dirname "…")"`를 셸에서 직접 실행 — 샌드박스를 타지 않는다. 단 Execute
+Command는 입력 binary를 보존하지 않으므로, "md 다운로드"(binary 응답)와 "RaeVault에
+저장"(그 binary를 쓰는 노드) 사이에 끼우면 또 다른 방식으로 깨진다. 그래서 **"누락?"
+판정 직후·"md 다운로드" 이전**으로 위치를 옮기고, "md 다운로드"의 `url`도
+`$json.download_url`(직전 노드 의존)에서 `$('오늘 파일 필터').item.json.download_url`
+(명시적 참조)로 바꿔 순서가 바뀌어도 안 깨지게 했다. `docs/n8n_3tv_sync_workflow.json`에
+이 구조 그대로 반영 — **재import해도 이 버그가 되살아나지 않는다.**
+
+n8n 워크플로 검증(errorCount 0)까지는 확인됐고, 다음 정기 실행(07:10 KST) 또는 수동
+Execute Workflow로 **실제 저장 성공 여부는 아직 확인 대기 중**이다.
+
+**교훈 세 가지**:
+1. n8n Executions의 `success` 표시는 "그 실행에서 도달한 마지막 분기가 정상
+   종료됐다"는 뜻이지 "리포트가 실제로 저장됐다"는 뜻이 아니다. 어느 분기를
+   탔는지까지 확인할 것.
+2. 다른 워크플로에서 통했던 Code 노드 + `require()` 패턴을 이 인스턴스에서도
+   통할 거라 가정하지 말 것 — 인스턴스별 샌드박스 설정 차이로 조용히 죽는다.
+3. 워크플로 중간에 binary를 다루지 않는 노드(Code, Execute Command 등)를 끼워
+   넣을 땐 그 노드가 입력 json/binary를 그대로 통과시키는지부터 확인할 것 —
+   안 그러면 뒤쪽 노드의 암묵적 `$json`/binary 의존이 조용히 끊긴다.
 
 ## ⚠️ 「옵시디안에서 열기」 딥링크는 걷어냈다 (2026-08-02)
 

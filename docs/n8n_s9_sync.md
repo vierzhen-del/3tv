@@ -54,14 +54,40 @@ GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KS
 `success`로 보인 날들은 전부 "누락?" 분기(리포트가 아직 안 올라와 경고만 보내고 끝)만 탄
 것이었습니다. 즉 볼트에 파일이 실제로 저장된 적이 사실상 없었습니다.
 
-**수정**: "md 다운로드"와 "RaeVault에 저장" 사이에 **"저장 폴더 생성" Code 노드**를 추가해
-`fs.mkdirSync(path.dirname(target), {recursive:true})`로 쓰기 전에 상위 폴더를 만듭니다.
-아래 노드 구조 표와 `n8n_3tv_sync_workflow.json`에 반영돼 있습니다. **재import 시 이 노드가
-같이 들어오므로 다시 이 버그로 돌아가지 않습니다.**
+**첫 시도(실패)**: "md 다운로드"와 "RaeVault에 저장" 사이에 Code 노드를 넣고
+`fs.mkdirSync(path.dirname(target), {recursive:true})`를 실행하려 했으나, **이 n8n
+인스턴스의 Code 노드 샌드박스가 `require('fs')`/`require('path')`를 막아** 그 자리에서
+또 죽었다(second-brain 워크플로에서 통했던 방식이 여기선 안 통함 — 인스턴스마다
+`NODE_FUNCTION_ALLOW_BUILTIN` 설정이 다를 수 있음을 의미).
 
-교훈: Executions의 `success`는 "그 실행이 끝까지 정상 종료됐다"는 뜻이지 "리포트가
-실제로 저장됐다"는 뜻이 아닙니다. 어느 분기를 탔는지(다운로드 경로 vs 누락 경고 경로)까지
-확인해야 합니다.
+**수정(적용됨)**: Code 노드 대신 **Execute Command 노드**로 교체 —
+`mkdir -p "$(dirname "{{ target }}")"`를 셸에서 직접 실행하므로 n8n 샌드박스를
+타지 않는다. 단, 이 노드를 끼우는 **위치**가 중요하다:
+
+- Execute Command 노드는 입력의 **binary를 보존하지 않는다** (출력 json이 stdout/exitCode로
+  대체됨). "md 다운로드"(binary 응답)와 "RaeVault에 저장"(그 binary를 쓰는 노드) 사이에
+  끼우면 binary가 끊겨 write가 "binary data not found"로 또 실패한다.
+- 그래서 **"누락?" 판정 직후, "md 다운로드" 이전**에 배치했다 — mkdir은 애초에
+  `target` 경로 문자열만 있으면 되고 다운로드 결과와 무관하므로 순서를 앞당겨도 무방하다.
+- 대신 "md 다운로드"의 `url` 파라미터를 `$json.download_url`(직전 노드에 의존)에서
+  `$('오늘 파일 필터').item.json.download_url`(명시적 노드 참조)로 바꿔, 사이에
+  Execute Command 노드가 끼어들어도 안 깨지게 했다. "RaeVault에 저장"은 원래부터
+  `$('오늘 파일 필터')`를 명시 참조하고 있었어서 그대로 뒀다.
+
+`n8n_3tv_sync_workflow.json`에 이 구조(누락? → 저장 폴더 생성 → md 다운로드 → RaeVault에
+저장) 그대로 반영해 뒀다. **재import하면 이 순서·노드가 같이 들어오므로 다시 이 버그로
+돌아가지 않는다.**
+
+교훈 두 가지:
+1. Executions의 `success`는 "그 실행이 끝까지 정상 종료됐다"는 뜻이지 "리포트가
+   실제로 저장됐다"는 뜻이 아니다. 어느 분기를 탔는지(다운로드 경로 vs 누락 경고 경로)까지
+   확인해야 한다.
+2. 다른 워크플로(예: second-brain)에서 통했던 Code 노드 + `require()` 패턴이 이 n8n
+   인스턴스에서도 통한다고 가정하지 말 것 — 샌드박스 허용 모듈은 인스턴스별 설정이다.
+   셸 명령이 필요하면 처음부터 Execute Command 노드를 고려한다.
+3. 파이프라인 중간에 **binary 데이터를 다루지 않는 노드**(Code, Execute Command 등)를
+   끼워 넣을 땐 그 노드가 입력 binary/json을 그대로 통과시키는지 먼저 확인할 것 —
+   안 그러면 뒤쪽 노드의 암묵적 `$json`/binary 의존이 조용히 끊긴다.
 
 ## 수동 구성 시 노드 구조 (import가 안 될 때)
 
@@ -71,11 +97,11 @@ GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KS
 | 2 | Code (오늘 경로 계산) | 아래 스니펫 |
 | 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, Options → Response → **Never Error** 켜기 |
 | 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출. 0건이고 `hour >= 9` 면 `{missing:true, text}` 1건 반환 |
-| 5 | IF (누락?) | 조건: `{{ $json.missing }}` is true → 출력 0(참)=경고, 출력 1(거짓)=다운로드 |
+| 5 | IF (누락?) | 조건: `{{ $json.missing }}` is true → 출력 0(참)=경고, 출력 1(거짓)=저장 폴더 생성 |
 | 6 | HTTP Request (텔레그램 경고) | POST `https://api.telegram.org/bot<TOKEN>/sendMessage`, JSON body `{chat_id, text}` |
-| 7 | HTTP Request (다운로드) | GET `{{download_url}}`, Header 동일, Response: **File** |
-| 8 | Code (저장 폴더 생성) | `fs.mkdirSync(path.dirname(target), {recursive:true})` — 2026-08-11 ENOENT 사고 수정, **빠뜨리면 write가 매번 죽음** |
-| 9 | Read/Write Files from Disk | Operation: Write, File Path: `/root/obsidian/3protv/{yyyy}/{mm}/{name}` |
+| 7 | Execute Command (저장 폴더 생성) | `mkdir -p "$(dirname "{{ $json.target }}")"` — Code 노드 + `require('fs')`는 이 인스턴스 샌드박스에 막혀 안 됨. **다운로드보다 먼저** 배치(이유는 위 사고 기록 참고) |
+| 8 | HTTP Request (다운로드) | GET `{{ $('오늘 파일 필터').item.json.download_url }}` (직전 노드가 바뀌어도 안 깨지게 명시 참조), Header 동일, Response: **File** |
+| 9 | Read/Write Files from Disk | Operation: Write, File Path: `{{ $('오늘 파일 필터').item.json.target }}`, Data Property: `data` — "다운로드" 바로 뒤에 붙여 binary 유지 |
 
 2번 Code 노드 스니펫:
 ```javascript
