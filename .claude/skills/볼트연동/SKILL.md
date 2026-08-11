@@ -109,15 +109,31 @@ Command는 입력 binary를 보존하지 않으므로, "md 다운로드"(binary 
 네임스페이스에서 `/root/obsidian`은 실제 볼트(`/storage/emulated/0/Documents/vierzhen_home`)로
 연결된 bind mount가 아니라, 그냥 비어있는 독립된 로컬 폴더다.**
 
-- 사전 준비 문서(`n8n_s9_sync.md`)는 proot 진입 시 `--bind
-  /storage/emulated/0/Documents/vierzhen_home:/root/obsidian`을 반드시 지정하라고
-  적어 두었지만, **n8n을 실제로 띄운 프로세스는 이 옵션 없이 시작된 것으로 보인다.**
+- **정확한 원인(2026-08-11 진단 확정)**: 정식 시작 스크립트
+  `/data/data/com.termux/files/home/n8n_launch.sh`(2026-07-20 작성, PostgreSQL
+  자동 점검·복구 + cloudflared 터널 재생성까지 포함하는 idempotent 스크립트)가
+  이미 존재하고, 정확히 이 사고를 막는 `--bind
+  /storage/emulated/0/Documents/vierzhen_home:/root/obsidian`과
+  `NODE_FUNCTION_ALLOW_BUILTIN=fs,path`를 둘 다 설정한다. 그런데 **지금 떠 있는
+  n8n(PID 27580)은 이 스크립트를 거치지 않고, 어느 세션에서 즉석으로 실행한 1회성
+  inline 명령(`eval 'export DB_TYPE=... n8n start'`)으로 뜬 것**이었다 — bind도
+  `NODE_FUNCTION_ALLOW_BUILTIN`도 둘 다 빠진 "약식" 기동. **위 사고에서 Code 노드의
+  `require('fs')`가 막혔던 것도 "n8n 인스턴스 자체의 샌드박스 제약"이 아니라
+  이 즉석 기동에 `NODE_FUNCTION_ALLOW_BUILTIN`이 빠져있었기 때문**이었다 — 정식
+  스크립트로 재기동하면 Code 노드 + `fs`도 될 가능성이 높다(단, Execute Command로
+  바꾼 결정 자체는 되돌릴 필요 없음 — 어느 쪽이든 동작하는 더 견고한 선택).
 - 그 결과 07:10/08:50/09:40 스케줄 실행이 (mkdir·저장 단계까지 포함해) "성공"으로
   보여도, 전부 이 끊어진 로컬 폴더에만 쓰고 있었다 — 실제 볼트·Syncthing에는 지금까지
   한 번도 자동으로 도달한 적이 없다. 이번에 사람이 수동 복사한 48개가 유일하게 실제
   볼트에 들어간 리포트다.
 - **워크플로 쪽 경로를 아무리 고쳐도 해결 안 된다** — 마운트 네임스페이스가 다른
-  이상, n8n 프로세스 자체가 재시작돼 올바른 bind로 다시 떠야 한다.
+  이상, n8n 프로세스 자체가 정식 스크립트로 재시작돼야 한다. **교훈**: Claude
+  Code 세션이 즉석으로 서비스를 띄워야 할 때는, 먼저 홈 디렉토리에 이미 그 서비스용
+  정식 시작 스크립트가 있는지부터 찾을 것 — 즉석 명령은 스크립트에 이미 반영된
+  환경설정(bind mount, 허용 모듈 등)을 빠뜨리기 쉽다.
+- **재시작 진행 상태**: 사용자 승인 후 `n8n_launch.sh`로 재기동 진행 중. 재시작하면
+  cloudflared 터널 주소가 바뀌어 n8n-mcp 재연결이 필요할 수 있음. 완료·검증되면 이
+  섹션을 "해결"로 갱신할 것.
 
 **아직 재시작하지 않았다.** 2026-07-20 복구 때 n8n이 (Node 버전 비호환 + DB 테이블
 소유권 불일치 + 스키마 권한 미부여) 3중 장애로 죽은 전례가 있어, 재시작을 함부로
