@@ -40,7 +40,7 @@ from .notify_telegram import send_alert, send_telegram
 from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
                                archive_simple_report, read_night_slots,
                                read_us_section_today, save_night_slot,
-                               vault_location_link)
+                               vault_location_link, vault_location_url)
 from .report import (drop_etf_stocks, extract_mentions, generate_etf_review,
                      generate_night_digest,
                      generate_noon_report, generate_report,
@@ -332,7 +332,8 @@ def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
     else:
         send_telegram(tg_format.to_telegram_html(body), settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(tg_format.to_plain(body))
+            send_kakao_memo(tg_format.to_plain(body),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
@@ -450,7 +451,8 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
     else:
         send_telegram(tg_format.to_telegram_html(body), settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(tg_format.to_plain(body))
+            send_kakao_memo(tg_format.to_plain(body),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
@@ -530,7 +532,8 @@ def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
         send_telegram(tg_format.to_telegram_html(body),
                       settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(tg_format.to_plain(body))
+            send_kakao_memo(tg_format.to_plain(body),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
@@ -753,7 +756,8 @@ def run(args: argparse.Namespace) -> int:
             send_telegram(tg_format.to_telegram_html(md), max_len, html=True)
         if settings.get("kakao", {}).get("enabled", True):
             # 카카오는 HTML/접기를 지원하지 않으므로 접기 마커만 걷어낸 평문으로
-            send_kakao_memo(tg_format.to_plain("\n\n".join(messages)))
+            send_kakao_memo(tg_format.to_plain("\n\n".join(messages)),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     # 9. 볼트 저장 실패는 조용히 넘기지 않는다 — 리포트는 이미 나갔지만 옵시디안엔
     #    아무것도 안 올라간 상태다. 텔레그램 경고 + 종료코드 1로 Actions를 빨갛게 만든다.
