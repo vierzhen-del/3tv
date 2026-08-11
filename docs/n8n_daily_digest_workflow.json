@@ -1,0 +1,170 @@
+{
+  "name": "3protv 오늘 종합 다이제스트 → 텔레그램",
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "평일 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "calcpath",
+      "name": "오늘 경로 계산",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 0],
+      "parameters": {
+        "jsCode": "const now = new Date(new Date().toLocaleString(\"en-US\", {timeZone: \"Asia/Seoul\"}));\nconst yyyy = String(now.getFullYear());\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst dd = String(now.getDate()).padStart(2, \"0\");\nconst ymd = yyyy + mm + dd;\nconst dateLabel = `${yyyy}-${mm}-${dd}`;\nreturn [{ json: { yyyy, mm, dd, ymd, dateLabel } }];"
+      }
+    },
+    {
+      "id": "readfiles",
+      "name": "오늘 리포트 파일 읽기",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [420, 0],
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ \"/root/obsidian/3protv/\" + $json.yyyy + \"/\" + $json.mm + \"/*\" + $json.ymd + \"*.md\" }}",
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "buildprompt",
+      "name": "다이제스트용 본문 구성",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 0],
+      "parameters": {
+        "jsCode": "// 3protv기사_*.md(원문 기사 덤프, 30~50KB)는 제외한다 — 이미 요약된\n// 오늘/정오/야간/ETF 리포트만 다이제스트 재료로 쓴다 (Gemini 요청 크기 보호 +\n// 기존 개별 리포트 텔레그램 발송과의 중복 최소화).\nconst items = $input.all();\nconst reports = [];\nfor (const item of items) {\n  const bin = item.binary && item.binary.data;\n  if (!bin) continue;\n  const fileName = bin.fileName || '';\n  if (fileName.startsWith('3protv기사')) continue;\n  const buf = Buffer.from(bin.data, 'base64');\n  const text = buf.toString('utf-8');\n  // 리포트 1건당 4000자 상한 — 4개 리포트를 합쳐도 프롬프트가 과도하게 커지지 않게\n  reports.push({ fileName, text: text.slice(0, 4000) });\n}\n\nif (reports.length === 0) {\n  return [{ json: { skip: true } }];\n}\n\nconst { ymd, dateLabel } = $('오늘 경로 계산').first().json;\nconst body = reports.map(r => `### ${r.fileName}\\n${r.text}`).join('\\n\\n');\nconst prompt = `아래는 ${dateLabel} 삼프로TV 관련 리포트 ${reports.length}건이다. `\n  + `핵심만 3~5줄 불릿으로 종합 요약해줘. 리포트별로 나열하지 말고 하루 흐름을 하나로 엮어서. `\n  + `매매 시점·수량 등 개인화된 투자 자문은 하지 말고 정보 전달만 해줘.\\n\\n${body}`;\n\nreturn [{ json: {\n  skip: false, prompt, ymd, dateLabel, count: reports.length,\n  fileNames: reports.map(r => r.fileName)\n} }];"
+      }
+    },
+    {
+      "id": "if-skip",
+      "name": "리포트 없음?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [860, 0],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "skip-flag",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "noop-skip",
+      "name": "종료(오늘 리포트 없음)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1080, -160],
+      "parameters": {}
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini 요약",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=<N8N_GEMINI_API_KEY>",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "parseresult",
+      "name": "요약 파싱",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 100],
+      "parameters": {
+        "jsCode": "// Gemini 실패(429 할당량 소진 등)도 조용히 죽지 않고 텔레그램으로 알린다\n// (2026-07-27 GH_PAT 침묵 실패 사고 재발 방지 원칙과 동일선상)\nconst res = $json;\nconst built = $('다이제스트용 본문 구성').first().json;\nconst { yyyy, mm } = $('오늘 경로 계산').first().json;\nconst candidate = res.candidates && res.candidates[0];\nconst text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0]\n  ? candidate.content.parts[0].text.trim()\n  : null;\n\nlet message;\nif (text) {\n  message = `📋 3프로TV 오늘의 종합 다이제스트 (${built.dateLabel})\\n\\n${text}\\n\\n`\n    + `— 오늘 발행된 리포트 ${built.count}건 종합 (원문: 옵시디안 3protv/${yyyy}/${mm}/)`;\n} else {\n  message = `⚠️ 오늘(${built.dateLabel}) 다이제스트 요약 생성 실패 (Gemini 응답 이상 — 할당량 소진 가능성)\\n`\n    + `개별 리포트 ${built.count}건은 정상 저장됐습니다 — 옵시디안에서 직접 확인해주세요.`;\n}\nreturn [{ json: { text: message } }];"
+      }
+    },
+    {
+      "id": "tg-send",
+      "name": "텔레그램 발송",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot<N8N_TELEGRAM_BOT_TOKEN>/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: \"<N8N_TELEGRAM_CHAT_ID>\", text: $json.text }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "평일 18:00": {
+      "main": [[{ "node": "오늘 경로 계산", "type": "main", "index": 0 }]]
+    },
+    "오늘 경로 계산": {
+      "main": [[{ "node": "오늘 리포트 파일 읽기", "type": "main", "index": 0 }]]
+    },
+    "오늘 리포트 파일 읽기": {
+      "main": [[{ "node": "다이제스트용 본문 구성", "type": "main", "index": 0 }]]
+    },
+    "다이제스트용 본문 구성": {
+      "main": [[{ "node": "리포트 없음?", "type": "main", "index": 0 }]]
+    },
+    "리포트 없음?": {
+      "main": [
+        [{ "node": "종료(오늘 리포트 없음)", "type": "main", "index": 0 }],
+        [{ "node": "Gemini 요약", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gemini 요약": {
+      "main": [[{ "node": "요약 파싱", "type": "main", "index": 0 }]]
+    },
+    "요약 파싱": {
+      "main": [[{ "node": "텔레그램 발송", "type": "main", "index": 0 }]]
+    }
+  }
+}
