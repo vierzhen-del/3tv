@@ -38,6 +38,36 @@ sessions:
     # 화면 캡처를 우선한다(report.py 프롬프트에 명시). 15분이라 CPU 전사 ~4분.
     # 비우면 구간 전사도 하지 않는다.
     transcribe_window: ["07:50", "08:05"]
+  noon:                     # 겸손은힘들다 "12시에 만나요" (박시동X이광수X권다영, 평일 데일리)
+    label: "12시 국내 시황"
+    live_url: "https://www.youtube.com/@gyeomsonisnothing/live"
+    # 07:05 뉴스공장도 같은 채널에서 라이브를 하지만 그건 이미 끝나 있을 시각이라
+    # 12:00 폴링 시작으로 충분히 분리된다 (2026-07-28 사용자 확정 채널)
+    poll_from_kst: "12:00"
+    start_kst: "12:00"
+    # 사용자 확정(2026-07-28, 실제 방송 스크린샷): 오프닝 이후 "정오의 Money 뉴스"
+    # 고정 코너(코스피·코스닥·환율 수치 + 헤드라인 불릿)가 8~12분대에 나온다.
+    # 10분으로는 잘릴 수 있어 20분까지 넉넉히 캡처(12:10→12:20).
+    end_kst: "12:20"
+    frame_filter: white
+    end_on_host_ad: false
+    host_ad_min_sec: 999999
+    transcribe_window: ["12:00", "12:20"]
+  night:                    # "오선의 미국 증시 라이브" 22:00~06:00 (2026-07-28 사용자 확정 채널)
+    label: "야간 미장 라이브"
+    live_url: "https://www.youtube.com/@futuresnow/live"
+    # ⚠️ GitHub Actions 단일 job은 최대 6시간이라 8시간 연속 녹화가 불가능하다.
+    # 대신 매시 정각 5분만 캡처하는 슬롯 8개 + 06시 종합으로 나눈다
+    # (사용자 요구 "1시간 단위 요약"과도 부합). main.py --slot/--digest 참고.
+    slots_kst: ["22:00", "23:00", "00:00", "01:00", "02:00", "03:00", "04:00", "05:00"]
+    slot_duration_min: 5
+    digest_kst: "06:00"
+    frame_filter: all
+    end_on_host_ad: false
+    host_ad_min_sec: 999999
+    # 무료 티어 할당량(gemini-2.5-flash 20/일)을 밤 8슬롯이 잡아먹지 않도록
+    # 별도 할당량 버킷인 flash-lite로 분리 (2026-07-28 사용자 확정)
+    vision_model: "gemini-3.1-flash-lite"
 
 capture:
   resolution: 480           # OCR에 충분 + 용량 절약
@@ -141,8 +171,13 @@ market:
 # 네이버 검색 API 뉴스 (NAVER_CLIENT_ID/NAVER_CLIENT_SECRET 등록 시 동작)
 # 무료 한도 하루 25,000건 — 종목별 조회 + 브리핑 수집에 충분히 여유롭다.
 news:
-  per_query: 4              # 종목 1개당 수집할 기사 수
-  briefing_limit: 20        # 브리핑에 넘길 최대 기사 수 (중복 제거 후)
+  per_query: 10              # 종목 1개당 수집할 기사 수 (2026-07-28: 데일리 정리용으로 상향)
+  briefing_limit: 60         # 브리핑에 넘길 최대 기사 수 (중복 제거 후)
+  # "당일" = 직전 24시간. 06시 방송 시점엔 "오늘 0시 이후" 기사가 거의 없고
+  # 정작 필요한 건 전일 미국장(어제 22:30~오늘 06:00 KST) 기사라 달력상 당일이
+  # 아니라 직전 N시간으로 잡는다. 발행시각을 못 읽은 기사는 버리지 않는다.
+  recency_hours: 24
+  max_queries: 20            # 검색 호출 상한 (이름 목록이 잘못 커졌을 때의 안전벨트)
 
 report:
   title_prefix: "3protv오늘"
@@ -178,3 +213,21 @@ flows:
   enabled: true
   investor: "외국인"        # 순매수 top10 기준 주체 (개인/기관합계 등으로 변경 가능)
   top_n: 10
+
+# ETF 포트폴리오 리뷰 (`--session etf`) — KRX 공시 납입자산구성내역(PDF)의
+# 전일 대비 구성 변화를 별도 메시지 1건으로 발송한다. 운용사 홈페이지를 긁지 않고
+# 공식 공시를 pykrx로 받으므로 홈페이지 개편에 안 깨진다.
+# ⚠️ 액티브 ETF만 의미가 있다 — 패시브는 지수를 따라가므로 구성 변화가 곧 지수 변경이다.
+etf_review:
+  top: 5                    # 매수/매도·편입/편출 각각 상위 몇 개까지 표시할지
+  targets:
+    - ticker: "426030"
+      name: "TIME 미국나스닥100액티브"
+    - ticker: "0015B0"
+      name: "KOACT 미국나스닥성장기업액티브"
+    - ticker: "441800"
+      name: "TIME korea플러스배당액티브"
+    - ticker: "472150"
+      name: "TIGER 배당커버드콜액티브"
+    - ticker: "0223R0"
+      name: "TIGER 미국테크NYSE100액티브"

@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 
-from .common import env_token, log
+from .common import KST, env_token, log
 
 # (엔드포인트, ID 헤더명, SECRET 헤더명)
 _ENDPOINTS = [
@@ -45,6 +47,23 @@ def _clean(s: str) -> str:
     return html.unescape(_TAG_RE.sub("", s or "")).strip()
 
 
+def _published_at(pub_date: str) -> datetime | None:
+    """네이버 pubDate(RFC 1123, 예: 'Mon, 27 Jul 2026 09:00:00 +0900')를 KST datetime으로.
+
+    형식이 안 맞거나 비어 있으면 None — 호출 측이 '당일' 필터에서 버리지 않고
+    뒤로 보내는 판단을 하게 한다(네이버가 종종 pubDate를 비운다).
+    """
+    if not pub_date:
+        return None
+    try:
+        dt = parsedate_to_datetime(pub_date)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone(KST)
+
+
 def _normalize(items: list[dict]) -> list[dict]:
     out = []
     for it in items:
@@ -52,11 +71,14 @@ def _normalize(items: list[dict]) -> list[dict]:
         url = (it.get("originallink") or it.get("link") or "").strip()
         if not title or not url:
             continue
+        pub_raw = (it.get("pubDate") or "").strip()
+        pub_dt = _published_at(pub_raw)
         out.append({
             "title": title[:160],
             "summary": _clean(it.get("description", ""))[:300],
             "url": url,
-            "published": (it.get("pubDate") or "").strip(),
+            "published": pub_raw,
+            "published_kst": pub_dt.strftime("%m/%d %H:%M") if pub_dt else "",
             "publisher": "네이버뉴스",
         })
     return out
@@ -123,17 +145,41 @@ def dedupe(items: list[dict]) -> list[dict]:
     return out
 
 
-def collect_briefing(names: list[str], per_query: int = 4, limit: int = 20) -> list[dict]:
+def collect_briefing(
+    names: list[str],
+    per_query: int = 4,
+    limit: int = 20,
+    recency_hours: int | None = None,
+    max_queries: int | None = None,
+) -> list[dict]:
     """브리핑용 기사 모음 — 종목명별로 검색해 합치고 중복 제거.
 
     각 항목에 어떤 종목 검색에서 나왔는지(`query`)를 남겨 LLM이 묶을 때 쓰게 한다.
+    `recency_hours`를 주면 그 시간 안에 발행된 기사만 남기고 **최신순 정렬**한다
+    (달력상 '당일'이 아니라 '직전 N시간' — 06시 방송 시점엔 전일 미국장 기사가
+    핵심이라 자정 기준으로 자르면 정작 필요한 기사가 날아간다). 발행시각을
+    못 읽은 기사는 버리지 않고 뒤로 보낸다(네이버가 종종 pubDate를 비운다).
+    `max_queries`는 이름 목록이 커졌을 때 검색 호출 폭주를 막는 안전벨트.
     """
     if not enabled():
         return []
+    if max_queries:
+        names = names[:max_queries]
     collected: list[dict] = []
     for name in names:
         for it in naver_news(name, display=per_query, sort="date"):
             collected.append({**it, "query": name})
-    result = dedupe(collected)[:limit]
+    result = dedupe(collected)
+
+    # 정렬·필터용 발행시각은 여기서만 계산하고 item dict엔 남기지 않는다
+    # (datetime은 JSON 직렬화가 안 돼 report.py의 json.dumps(verified_mentions)에서 깨진다)
+    dated = [(it, _published_at(it.get("published", ""))) for it in result]
+
+    if recency_hours is not None:
+        cutoff = datetime.now(KST) - timedelta(hours=recency_hours)
+        dated = [(it, dt) for it, dt in dated if dt is None or dt >= cutoff]
+
+    dated.sort(key=lambda pair: pair[1] or datetime.min.replace(tzinfo=KST), reverse=True)
+    result = [it for it, _ in dated][:limit]
     log.info("네이버 뉴스 브리핑 수집: %d건 (종목 %d개 검색)", len(result), len(names))
     return result

@@ -220,16 +220,19 @@ def test_news_item_rejects_incomplete():
     assert market._news_item({}) is None
 
 
-def test_fetch_news_falls_back_to_search_when_api_fails(monkeypatch):
-    """뉴스 API가 죽어도 최소 검색 링크는 나와야 한다."""
+def test_fetch_news_returns_empty_without_real_articles(monkeypatch):
+    """뉴스 API·yfinance 둘 다 실패하면 빈 리스트 — 검색 링크로 갈음하지 않는다.
+
+    검색 결과 페이지 URL이 '기사'로 리포트에 박히는 문제(2026-07-27 실측:
+    `[S&P500](https://search.naver.com/search.naver?...)`)의 원인이었다.
+    """
     import yfinance as yf
     monkeypatch.setattr(yf, "Ticker", lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError("no news")))
-    got = market.fetch_news("엔비디아", "US", "NVDA")
-    assert got and all(g["url"].startswith("https://") for g in got)
+    assert market.fetch_news("엔비디아", "US", "NVDA") == []
 
 
-def test_fetch_news_prepends_real_articles(monkeypatch):
+def test_fetch_news_only_real_articles(monkeypatch):
     class FakeTicker:
         news = [{"content": {
             "title": "실제 기사",
@@ -240,8 +243,9 @@ def test_fetch_news_prepends_real_articles(monkeypatch):
     import yfinance as yf
     monkeypatch.setattr(yf, "Ticker", lambda *a, **k: FakeTicker())
     got = market.fetch_news("엔비디아", "US", "NVDA")
-    assert got[0]["title"] == "실제 기사"        # 실제 기사가 검색 링크보다 앞
-    assert len(got) > 1                          # 검색 링크도 함께
+    assert len(got) == 1
+    assert got[0]["title"] == "실제 기사"
+    assert all("search.naver.com" not in g["url"] for g in got)
 
 
 def test_stale_asof_gets_flagged(monkeypatch):

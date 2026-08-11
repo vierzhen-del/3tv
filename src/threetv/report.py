@@ -163,10 +163,101 @@ def _material_digest(vision_results: list[dict], limit_chars: int = 30000) -> st
     return digest[:limit_chars]
 
 
+def _clean_digest_fallback(vision_results: list[dict], limit_chars: int = 4000) -> str:
+    """LLM 없이 **사람에게 그대로 보여줄** 자료화면 요약.
+
+    `_material_digest()`는 LLM 프롬프트용이라 `<종목표시: ...>` 같은 내부 태그를
+    그대로 남긴다 — LLM이 이해하고 자연어로 풀어써 주는 걸 전제하기 때문이다.
+    그런데 리포트 생성이 통째로 실패하는 열화 경로에서는 이 원문이 **치환 없이
+    그대로 텔레그램에 노출**되는 버그가 있었다(2026-07-28 실측, night-digest
+    슬롯 데이터 부족으로 열화 전환된 실제 발송 리포트에서 확인). 그래서
+    ① 태그를 벗겨 읽을 수 있는 불릿으로, ② 프레임마다 반복되는 동일 텍스트는
+    한 번만, ③ 지표는 슬롯의 마지막(최신) 프레임 값만 한 줄로 압축한다.
+    """
+    if not vision_results:
+        return "(자료화면 없음)"
+    seen_text: set[str] = set()
+    lines: list[str] = []
+    last_stocks: list[str] = []
+    for r in vision_results:
+        ts = r.get("timestamp_sec", 0)
+        mm, ss = divmod(int(ts), 60)
+        t = (r.get("text") or "").strip()
+        if t and t not in seen_text:
+            seen_text.add(t)
+            lines.append(f"[{mm:02d}:{ss:02d}] {t}")
+        stocks = [
+            f"{s.get('name')} {s.get('price') or ''} {s.get('change') or ''}".strip()
+            for s in (r.get("stocks") or []) if s.get("name")
+        ]
+        if stocks:
+            last_stocks = stocks
+    if last_stocks:
+        lines.append("· " + " · ".join(last_stocks))
+    return ("\n".join(lines) or "(자료화면 없음)")[:limit_chars]
+
+
 _MARK_RE = re.compile(r"===([A-Z]+)===")
 
 # ===NEWS=== 안에서 '주요종목'과 '그 외'를 가르는 표식. 그 외는 접기 블록으로 내린다.
 NEWS_REST_MARK = "---기타---"
+
+# 시황 본문에서 "여기부터는 접어라"를 표시하는 마커들. LLM이 마커만 찍고 코드가
+# 접는 구조 — LLM에게 `<<<FOLD:...>>>` 문법을 직접 시키면 형식이 자주 깨진다.
+FLOW_DETAIL_MARK = "---수급상세---"     # 개인·외국인·기관 요약 아래의 세부 주체/TOP10
+US_CTX_MARK = "---미장참고---"          # kr 리포트에 딸려오는 미국장 내용
+
+
+# 공용 프롬프트의 번호 섹션 헤딩("1) 📌 ...", "2) 💹 ..." 등) — `_fold_after`가
+# 다음 섹션 시작 전에서 멈추는 경계로 쓴다.
+_SECTION_HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\d+\)\s", re.M)
+
+
+def _fold_after(md: str, mark: str, title: str) -> str:
+    """`mark` 다음 줄부터 **다음 번호 섹션 시작 전까지**를 접기 블록으로 내린다.
+
+    ⚠️ 마커 뒤 전부를 무조건 접으면 안 된다 — `---미장참고---`는 1번 섹션
+    중간(국내장 전망 다음)에 오는데, 그 뒤에 2)~5) 섹션이 더 있다. "전부 접기"로
+    구현했더니 3)·5) 섹션 전체가 미국장 접기 블록 안으로 빨려 들어갔다
+    (2026-08-01 로컬 재현: 캡처 정리·수급 섹션이 통째로 사라짐). 다음 번호 헤딩을
+    만나면 그 앞에서 접기를 끊고, 헤딩부터는 원래 자리에 그대로 남긴다.
+    마커가 파일 끝부분(예: 5번 섹션의 `---수급상세---`)에 있으면 다음 헤딩이
+    없으니 기존처럼 끝까지 접는다.
+    """
+    if mark not in md:
+        return md
+    head, rest = md.split(mark, 1)
+    m = _SECTION_HEAD_RE.search(rest)
+    tail = ""
+    if m:
+        tail, rest = rest[m.start():].strip(), rest[:m.start()]
+    rest = rest.strip()
+    if not rest:
+        out = head.strip()
+    else:
+        out = f"{head.strip()}\n\n{tg_format.fold(title, rest)}"
+    if tail:
+        out = f"{out}\n\n{tail}"
+    return out
+
+
+_LINK_ROW_RE = re.compile(r"^\s*🔗 .*$", re.M)
+
+
+def _fold_link_rows(md: str, title: str = "캡처 화면 관련 기사 링크") -> str:
+    """본문에 흩어진 `🔗 A · B · C` 링크 나열 줄을 걷어 **맨 뒤 접기 블록 하나**로 모은다.
+
+    캡처 정리 섹션은 화면 내용(주요 내용) 사이사이에 링크 줄이 끼어 있어 읽는 흐름이
+    끊긴다(2026-08-01 실물 지적). 링크는 버리지 않고 한곳에 모아 접는다.
+    LLM 출력·열화 출력 어디에나 적용되도록 **후처리**로 구현했다 — 프롬프트 지시에
+    기대면 지키지 않는 날 그대로 나간다.
+    """
+    rows = [m.group(0).strip() for m in _LINK_ROW_RE.finditer(md)]
+    if len(rows) < 2:          # 1줄뿐이면 접는 게 오히려 번거롭다
+        return md
+    body = _LINK_ROW_RE.sub("", md)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return f"{body}\n\n{tg_format.fold(f'{title} ({len(rows)}건)', chr(10).join(rows))}"
 
 
 def _split_marked(text: str) -> dict[str, str]:
@@ -199,6 +290,33 @@ def _parse_holdings_lines(block: str) -> list[dict]:
     return holdings
 
 
+_ITEM_START_RE = re.compile(r"^•\s")
+
+
+def _fold_top_n(md: str, n: int, title: str) -> str:
+    """상위 `n`개 항목(`•`로 시작하는 줄 + 뒤따르는 비-`•` 줄)만 본문에 남기고
+    나머지는 접기 블록으로 내린다.
+
+    데일리 정리(===DAILY===)처럼 LLM이 별도 마커를 찍지 않는 섹션용 — 항목 순서
+    자체가 이미 중요도순(프롬프트가 "상위 6~8개, 중요도 순"으로 요청)이라, 개수만
+    세어 자르면 되고 LLM의 마커 준수 여부에 기대지 않아도 된다(2026-08-09,
+    "top3 제외 접기" 요청).
+    """
+    lines = md.splitlines()
+    items: list[list[str]] = []
+    for line in lines:
+        if _ITEM_START_RE.match(line):
+            items.append([line])
+        elif items:
+            items[-1].append(line)
+        # 첫 항목 전의 잡음(빈 줄 등)은 버린다 — DAILY/NEWS는 항상 불릿으로 시작
+    if len(items) <= n:
+        return md
+    head = "\n".join(chr(10).join(item) for item in items[:n])
+    rest = "\n".join(chr(10).join(item) for item in items[n:])
+    return f"{head}\n\n{tg_format.fold(f'{title} ({len(items) - n}건 더) — 눌러서 펼치기', rest)}"
+
+
 def _fold_news_rest(news_md: str) -> str:
     """기사 섹션의 `---기타---` 이후를 접기 블록으로.
 
@@ -215,6 +333,30 @@ def _fold_news_rest(news_md: str) -> str:
     n = sum(1 for ln in rest.splitlines() if ln.strip().startswith(("•", "-", "*")))
     title = f"그 외 종목 기사 ({n}건) — 눌러서 펼치기" if n else "그 외 종목 기사 — 눌러서 펼치기"
     return f"{head.strip()}\n\n{tg_format.fold(title, rest)}"
+
+
+# LLM이 프롬프트 지시를 무시하고 검색 결과 페이지 URL을 "기사"로 만들어낼 때의
+# 최후 안전장치 — 실제 기사가 아닌 검색 페이지 도메인/경로 패턴만 잡는다.
+_SEARCH_URL_RE = re.compile(
+    r"\[([^\]\n]+)\]\("
+    r"(?:https?://)?(?:www\.)?"
+    r"(?:search\.naver\.com/search\.naver"
+    r"|finance\.yahoo\.com/quote/[^)/]+/news/?"
+    r"|(?:www\.)?google\.com/search)"
+    r"[^)\n]*\)"
+)
+
+
+def _strip_search_links(md: str) -> str:
+    """`[제목](검색결과URL)` → `제목` — 링크만 벗기고 텍스트는 남긴다.
+
+    검색 결과 페이지는 기사가 아니다. `market.fetch_news()`가 더 이상
+    `search_links()`를 자동으로 붙이지 않지만, LLM이 프롬프트를 무시하고 직접
+    검색 URL을 만들어낼 가능성은 남아있어 출력 직전에 한 번 더 걸러낸다.
+    """
+    if not md:
+        return md
+    return _SEARCH_URL_RE.sub(lambda m: m.group(1), md)
 
 
 def _parse_sections(text: str) -> dict:
@@ -237,16 +379,42 @@ def _parse_sections(text: str) -> dict:
     if "TITLE" not in sec or not sihwang:
         raise ValueError(f"구분선 형식이 아닙니다: {text[:200]}")
 
-    news_md = _fold_news_rest(sec.get("NEWS", ""))
-    parts = [sihwang] + ([news_md] if news_md else [])
+    # 가독성 후처리 (2026-08-01 요청) — 마커 기반 접기는 LLM이 마커를 안 찍으면
+    # 원문 그대로 통과하고, 링크 줄 접기는 마커 없이 후처리라 항상 적용된다.
+    sihwang = _fold_after(sihwang, FLOW_DETAIL_MARK,
+                          "수급 상세 (그외 주체 · TOP10 · ETF 등락)")
+    sihwang = _fold_after(sihwang, US_CTX_MARK, "미국장 참고")
+    sihwang = _fold_link_rows(sihwang)
+
+    news_raw = sec.get("NEWS", "")
+    daily_raw = sec.get("DAILY", "").strip()
+
+    # 저장(옵시디안 아카이브)용 — 접지 않고 전부 남긴다. 이 파일은 나중에 kr 세션이
+    # read_us_section_today()로 다시 읽어 컨텍스트로 쓰는데, 접힌 채로 저장하면
+    # (텔레그램 expandable/옵시디안 callout 문법) 그 재사용 경로에서 종목이 누락된
+    # 것처럼 취급될 위험이 있다(2026-08-09 사용자 확정 — "저장시는 풀고저장해서
+    # 나중요약 학습시에는 전종목 검색되게").
+    news_archive = news_raw
+    if daily_raw:
+        news_archive += f"\n\n### 📰 데일리 주요 종목기사 정리\n{daily_raw}"
+
+    # 텔레그램용 — 상위 항목만 보이고 나머지는 눌러서 펼치는 접기 블록으로.
+    news_telegram = _fold_news_rest(news_raw)
+    if daily_raw:
+        news_telegram += (f"\n\n### 📰 데일리 주요 종목기사 정리\n"
+                          f"{_fold_top_n(daily_raw, 3, '그 외 이슈')}")
+
+    parts = [sihwang] + ([news_archive] if news_archive else [])
     return {
         "title_keyword": (sec.get("TITLE", "").splitlines() or [""])[0].strip(),
         # 하위호환 — 열화 경로·아카이브가 쓰는 통합 본문
         "telegram_text": sec.get("TELEGRAM") or sihwang,
         "markdown_report": "\n\n".join(parts),
         "holdings_mentioned": _parse_holdings_lines(sec.get("HOLDINGS", "")),
-        # LLM 경로는 전사 전문을 본문에 싣지 않으므로 텔레그램용·옵시디안용이 같다
-        "reports": {"sihwang": sihwang, "sihwang_md": sihwang, "news": news_md},
+        # news: 저장용(접지 않음) / news_telegram: 전송용(접힘). 아카이브는 news를
+        # 쓰고, 텔레그램 전송은 news_telegram이 있으면 그걸 우선한다.
+        "reports": {"sihwang": sihwang, "sihwang_md": sihwang,
+                   "news": news_archive, "news_telegram": news_telegram},
     }
 
 
@@ -284,11 +452,46 @@ def _briefing_lines(news_briefing: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
-VERBATIM_MAX_LINES = 15   # '화면 원문' 보존 시 한 화면당 최대 줄 수
+def _briefing_grouped(news_briefing: list[dict] | None) -> str:
+    """수집 기사를 종목(query)별로 묶어 표시 — 열화(LLM 없음) 경로의 데일리 정리용.
+
+    LLM이 없으면 이슈 단위 요약(===DAILY===)을 만들 수 없으니 그 대신 종목별로
+    실제 기사 원문 목록을 보여준다. `news.py`가 이미 최신순으로 정렬해 넘긴다.
+    """
+    if not news_briefing:
+        return ""
+    by_query: dict[str, list[dict]] = {}
+    for n in news_briefing:
+        by_query.setdefault(n.get("query") or "기타", []).append(n)
+    blocks = []
+    for q, items in by_query.items():
+        lines = [f"**{q}**"]
+        for n in items:
+            when = f" ({n['published_kst']})" if n.get("published_kst") else ""
+            lines.append(f"• [{n['title']}]({n['url']}){when}")
+            if n.get("summary"):
+                lines.append(f"  {n['summary'][:160]}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+VERBATIM_MAX_LINES = 15         # '화면 원문' 보존 시 한 화면당 최대 줄 수
+VERBATIM_MAX_LINES_SUMMARY = 30  # 매일 나오는 요약 슬라이드(_SUMMARY_ANCHORS)는 더 길게 허용
 
 # 개별 종목 시세판을 가려내는 단서 — 이런 화면은 8시 전후 분석에서 제외한다
 # (사용자 확정 2026-07-26: 08시 전후는 흰 배경 '그림' 슬라이드만 보고 개별 주가는 미적용)
 _QUOTE_TABLE_HINTS = ("현재가", "거래량", "전일대비", "등락률", "체결")
+
+# 매일 나오는 3종 요약 슬라이드의 제목 — 이 앵커가 있으면 종목이 몇 개 나열됐든
+# 시세판이 아니라 방송 본 자료다. 2026-07-28 실측: "전일, 해외/국내 시장 흐름 및
+# 특징" 슬라이드가 종목을 16~17개 언급한다는 이유만으로 _is_quote_table()의
+# "종목 12개 이상" 규칙에 걸려 매일 통째로 캡처 정리에서 빠지고 있었다.
+_SUMMARY_ANCHORS = ("흐름 및 특징", "특징:", "특징 :", "시황 전망", "투자 대응", "시장 흐름")
+
+
+def _is_summary_slide(text: str) -> bool:
+    t = text or ""
+    return any(a in t for a in _SUMMARY_ANCHORS)
 
 # ETF 판별 — 삼프로TV(이 채널 한정)는 시황에서 ETF를 다루지 않으므로 전부 광고 취급.
 # 화면에 뜨는 ETF는 예외 없이 협찬·상품 홍보였다 (사용자 확정 2026-07-27).
@@ -328,7 +531,15 @@ def _is_quote_table(text: str, stocks: list | None) -> bool:
 
     2026-07-26 실측: 07:59 코스피/코스닥 시세판이 50줄 넘게 잡혀 리포트를 잠식했다.
     이런 화면은 '요약 슬라이드'가 아니라 단순 종목 나열이라 분석 가치가 낮다.
+
+    ⚠️ 2026-07-28 실측: "전일, 해외/국내 시장 흐름 및 특징" 요약 슬라이드가
+    16~17개 종목을 한 줄씩 나열한다는 이유만으로 아래 종목-개수 규칙에 걸려
+    매일 통째로 빠졌다. `_is_summary_slide()`(제목 앵커)에 걸리면 종목 수와
+    무관하게 시세판이 아니라고 먼저 확정한다 — 진짜 시세판(헤더 단어 2개↑ +
+    쉼표 구분 행 5줄↑)은 이 앵커가 없으므로 그 판정은 그대로 유지된다.
     """
+    if _is_summary_slide(text):
+        return False
     t = text or ""
     hits = sum(1 for h in _QUOTE_TABLE_HINTS if h in t)
     rows = [ln for ln in t.splitlines() if ln.count(",") >= 3]
@@ -339,30 +550,63 @@ def _is_quote_table(text: str, stocks: list | None) -> bool:
     return len(stocks or []) >= 12
 
 
+def _delta_str(d: float | None) -> str:
+    """전일대비 증감 — 없으면 빈 문자열."""
+    if d is None:
+        return ""
+    return f" (전일比 {'+' if d > 0 else '−'}{abs(d):,.0f})"
+
+
 def _flow_lines(flows: dict | None) -> str:
-    """수급 데이터를 사람이 읽는 줄로 (LLM 요약 실패 시에도 원자료가 남게)."""
+    """수급 데이터를 사람이 읽는 줄로 (LLM 요약 실패 시에도 원자료가 남게).
+
+    종목이 여러 개인 목록은 **한 줄에 하나씩** 쓴다 — 쉼표로 이어붙이면 텔레그램에서
+    통째로 한 문단이 돼 읽을 수가 없다(2026-07-29 실물 스크린샷 지적).
+    """
     if not flows:
         return ""
-    parts: list[str] = []
-    inv = flows.get("investors") or []
-    if inv:
-        parts.append("• 전일 수급주체 순매수(억원): " + ", ".join(
-            f"{r['investor']} {r['net']:+,.0f}" for r in inv[:8]))
+    parts: list[str] = []      # 항상 펼쳐 보이는 개요
+    detail: list[str] = []     # 접어 두는 상세
+
+    # ① 개인·외국인·기관 요약 (전일대비 증감 포함) — 가장 먼저 본다.
+    #    나머지 주체(연기금·투신·사모…)와 TOP10은 상세로 내린다(2026-08-01 요청).
+    summary = flows.get("summary") or {}
+    if summary.get("main"):
+        d = summary.get("date", "")
+        head = f"• 수급 요약 ({d[4:6]}/{d[6:8]} 순매수, 억원)" if len(d) == 8 \
+            else "• 수급 요약 (순매수, 억원)"
+        parts.append(head)
+        for r in summary["main"]:
+            parts.append(f"  · {r['investor']}: {r['net']:+,.0f}{_delta_str(r.get('delta'))}")
+        others = summary.get("others") or []
+        if others:
+            detail.append("• 그외 수급주체 (억원)")
+            detail += [f"  · {r['investor']}: {r['net']:+,.0f}{_delta_str(r.get('delta'))}"
+                       for r in others]
+    else:
+        inv = flows.get("investors") or []
+        if inv:
+            parts.append("• 수급주체 순매수(억원)")
+            for r in inv[:8]:
+                parts.append(f"  · {r['investor']}: {r['net']:+,.0f}")
+
     top = flows.get("top") or {}
-    if top.get("buy"):
-        parts.append(f"• {top.get('investor','')} 순매수 TOP: " + ", ".join(
-            f"{r['name']}({r['net']:+,.0f})" for r in top["buy"][:10]))
-    if top.get("sell"):
-        parts.append(f"• {top.get('investor','')} 순매도 TOP: " + ", ".join(
-            f"{r['name']}({r['net']:+,.0f})" for r in top["sell"][:10]))
+    for key, label in (("buy", "순매수"), ("sell", "순매도")):
+        if top.get(key):
+            detail.append(f"• {top.get('investor','')} {label} TOP (억원)")
+            detail += [f"  · {r['name']}: {r['net']:+,.0f}" for r in top[key][:10]]
+
     etf = flows.get("etf") or {}
-    if etf.get("up"):
-        parts.append("• ETF 상승 TOP: " + ", ".join(
-            f"{r['name']}({r['pct']:+.2f}%)" for r in etf["up"][:10]))
-    if etf.get("down"):
-        parts.append("• ETF 하락 TOP: " + ", ".join(
-            f"{r['name']}({r['pct']:+.2f}%)" for r in etf["down"][:10]))
-    return "\n".join(parts)
+    for key, label in (("up", "상승"), ("down", "하락")):
+        if etf.get(key):
+            detail.append(f"• ETF {label} TOP")
+            detail += [f"  · {r['name']}: {r['pct']:+.2f}%" for r in etf[key][:10]]
+
+    out = "\n".join(parts)
+    if detail:
+        out += "\n\n" + tg_format.fold("수급 상세 (그외 주체 · TOP10 · ETF 등락)",
+                                       "\n".join(detail))
+    return out
 
 
 def _capture_blocks(
@@ -370,6 +614,7 @@ def _capture_blocks(
     verified_mentions: list[dict],
     base_kst: str,
     verbatim_window: list | None = None,
+    news_briefing: list[dict] | None = None,
 ) -> str:
     """캡처 화면당 2줄 — ① 시각·종목·타이틀 ② 연관 기사 링크.
 
@@ -377,20 +622,43 @@ def _capture_blocks(
     **원문 줄 구성을 그대로** 옮긴다. 그 화면은 배치 자체가 정보이기 때문이다.
     단 그 구간의 **개별 종목 시세판은 제외**한다 (사용자 확정: 08시 전후는 흰 배경
     그림 슬라이드만 보고 개별 주가는 반영하지 않는다).
-    """
-    from . import market
 
+    기사 링크는 `verified_mentions[].news`(검증 시세와 함께 조회한 실제 기사) →
+    `news_briefing`(종목명으로 미리 검색해둔 실제 기사, `query` 필드로 매칭) 순으로
+    찾는다. 둘 다 없으면 **링크 없이 종목명만** — 검색 결과 페이지 URL로 대체하지
+    않는다(2026-07-27 실측: `verified_mentions`가 비면 캡처 링크가 전부
+    `search.naver.com` 검색 URL로 떨어졌다. `us_stocks_in_captures()`가
+    `news_briefing`의 1순위 검색 대상이라(main.py) 캡처 종목의 실제 기사는
+    이미 브리핑에 들어 있다 — 여기서 연결만 하면 된다).
+    """
     news_map = {
         (v.get("name") or "").strip(): v.get("news") or []
         for v in verified_mentions if v.get("name")
     }
+    briefing_map: dict[str, list[dict]] = {}
+    for n in news_briefing or []:
+        q = (n.get("query") or "").strip()
+        if q:
+            briefing_map.setdefault(q, []).append(n)
     blocks: list[str] = []
     skipped_tables = 0
+    seen_text: set[str] = set()
+    skipped_dupes = 0
     for r in vision_results:
         clock = _clock(base_kst, r.get("timestamp_sec", 0))
         text = (r.get("text") or "").strip()
         stocks = [s for s in (r.get("stocks") or []) if s.get("name")]
         names = [str(s["name"]).strip() for s in stocks]
+
+        # 같은 화면이 여러 프레임에 걸쳐 잡히면 리포트에 똑같은 줄이 반복된다
+        # (2026-07-29 us 실측: Russell 2000·Micron 헤드라인이 각각 2번씩 실렸다).
+        # 공백만 다른 동일 텍스트는 처음 것만 남긴다.
+        key = " ".join(text.split())
+        if key and key in seen_text:
+            skipped_dupes += 1
+            continue
+        if key:
+            seen_text.add(key)
 
         # 8시 전후 구간의 개별 종목 시세판은 분석 대상이 아니다
         if _in_window(clock, verbatim_window) and _is_quote_table(text, stocks):
@@ -400,8 +668,10 @@ def _capture_blocks(
         if _in_window(clock, verbatim_window) and text:
             # 화면 그대로 — 줄 구성 보존. 단 시세 표처럼 줄이 매우 많은 화면은
             # 상위 일부만 (2026-07-26 실측: 50줄 넘는 종목 시세판이 리포트를 잠식했다)
+            # 매일 나오는 요약 슬라이드(_is_summary_slide)는 20줄짜리도 있어 더 길게 허용
+            max_lines = VERBATIM_MAX_LINES_SUMMARY if _is_summary_slide(text) else VERBATIM_MAX_LINES
             lines = text.splitlines()
-            shown = lines[:VERBATIM_MAX_LINES]
+            shown = lines[:max_lines]
             body = "\n".join(shown)
             if len(lines) > len(shown):
                 body += f"\n…(총 {len(lines)}줄 중 {len(shown)}줄 표시)"
@@ -415,12 +685,12 @@ def _capture_blocks(
                 head += f" · {', '.join(names[:6])}"
             blocks.append(f"{head}\n{title or '(텍스트 없음)'}")
 
-        # 2번째 줄: 연관 기사 링크 (종목별 1건씩)
+        # 2번째 줄: 연관 기사 링크 (종목별 1건씩). 실제 기사가 없으면 그 종목은
+        # 링크 줄에서 빠진다 — 종목명 자체는 이미 위쪽 head 줄에 있다.
         links: list[str] = []
         for s in stocks[:4]:
             nm = str(s["name"]).strip()
-            mkt = (s.get("market") or "").upper() or "KR"
-            items = news_map.get(nm) or market.search_links(nm, mkt)
+            items = news_map.get(nm) or briefing_map.get(nm)
             if items:
                 n = items[0]
                 links.append(f"[{nm}]({n['url']})")
@@ -429,6 +699,8 @@ def _capture_blocks(
     if skipped_tables:
         log.info("8시 전후 개별 종목 시세판 %d장 제외 (흰 배경 슬라이드만 분석)",
                  skipped_tables)
+    if skipped_dupes:
+        log.info("동일 화면 캡처 %d장 중복 제거", skipped_dupes)
     return "\n".join(blocks)
 
 
@@ -550,6 +822,17 @@ def _match_holdings_mentions(holdings_data: dict, haystack: str) -> list[dict]:
     return result
 
 
+def mention_line(m: dict) -> str:
+    """관심종목 한 줄 — 방송 언급 여부를 이모지 하나로만 표시한다.
+
+    종전에는 언급되면 `📡 + 맥락`, 아니면 `언급 없음`을 적었다. 그런데 대부분의
+    종목은 언급되지 않아 "(언급 없음)"이 줄마다 반복되며 화면에서 줄바꿈만
+    늘렸다(2026-08-02 실측: 13줄 중 11줄). 이제 언급된 종목만 🎤를 달고,
+    언급되지 않은 종목에는 아무 표시도 붙이지 않는다.
+    """
+    return f"• {'🎤 ' if m.get('mentioned') else ''}{m['name']}"
+
+
 def _fallback_report(
     settings: dict,
     session: str,
@@ -580,6 +863,7 @@ def _fallback_report(
     captures = _capture_blocks(
         vision_results, verified_mentions,
         scfg.get("start_kst", "00:00"), scfg.get("verbatim_window"),
+        news_briefing=news_briefing,
     )
 
     banner = (
@@ -593,8 +877,7 @@ def _fallback_report(
     idx_block = "\n".join(_quote_line(q) for q in indices) or "• 조회 실패"
     hold_block = "\n".join(_quote_line(q) for q in holdings_quotes) or "• 조회 실패"
     mention_block = "\n".join(
-        f"• {m['name']}: {'📡 ' + (m['context'] or '방송 언급') if m['mentioned'] else '언급 없음'}"
-        for m in holdings_mentioned
+        mention_line(m) for m in holdings_mentioned
     ) or "• 대조할 보유종목 없음"
 
     # ── 1건: 시황 (요약 자리엔 원자료 배너 + 지표 + 캡처)
@@ -602,7 +885,9 @@ def _fallback_report(
     hold_title = f"💼 보유종목 시세 ({hold_asof})" if hold_asof else "💼 보유종목 시세"
     sihwang_parts = [banner, f"\n### {idx_title}\n{idx_block}"]
     if captures:
-        sihwang_parts.append(f"\n### 🖼 방송 화면 캡처 (시각 · 종목 · 관련 기사)\n{captures}")
+        # 링크 나열 줄은 화면 내용 사이에 끼면 읽는 흐름을 끊는다 — 뒤로 모아 접는다
+        sihwang_parts.append(
+            f"\n### 🖼 방송 화면 캡처 (종목 · 관련 기사)\n{_fold_link_rows(captures)}")
     else:
         sihwang_parts.append(
             "\n### 🖼 방송 화면 캡처\n"
@@ -654,15 +939,28 @@ def _fallback_report(
         bucket.append(head)
         if links:
             bucket.append(f"  🔗 {links}")
-    news_body = "\n".join(head_lines) or "추출 실패(LLM 필요)"
+    # 저장(옵시디안 아카이브)용 — 접지 않고 head/rest를 그대로 이어붙인다(2026-08-09
+    # 확정 — 나중에 read_us_section_today() 등이 재사용할 때 전종목이 검색돼야 함).
+    news_archive_body = "\n".join(head_lines) or "추출 실패(LLM 필요)"
     if rest_lines:
-        news_body += f"\n\n{NEWS_REST_MARK}\n" + "\n".join(rest_lines)
-    news_md = f"### 📈 방송 언급 종목 · 관련 기사\n{_fold_news_rest(news_body)}"
-    # LLM 요약은 불가하니 기사 목록을 그대로 (중복 제거는 수집 단계에서 이미 완료)
-    briefing_block = _briefing_lines(news_briefing)
-    if briefing_block:
-        news_md += "\n\n### 📰 뉴스 브리핑 (수집 원문 — AI 요약 없음)\n" + tg_format.fold(
-            "기사 목록 — 눌러서 펼치기", briefing_block
+        news_archive_body += "\n" + "\n".join(rest_lines)
+    news_archive = f"### 📈 방송 언급 종목 · 관련 기사\n{news_archive_body}"
+
+    # 텔레그램용 — 주요종목은 노출, 그 외는 접기
+    news_telegram_body = "\n".join(head_lines) or "추출 실패(LLM 필요)"
+    if rest_lines:
+        news_telegram_body += f"\n\n{NEWS_REST_MARK}\n" + "\n".join(rest_lines)
+    news_telegram = f"### 📈 방송 언급 종목 · 관련 기사\n{_fold_news_rest(news_telegram_body)}"
+
+    # LLM이 없어 이슈 단위 요약(===DAILY===)은 만들 수 없다 — 대신 종목별로
+    # 실제 기사 원문을 묶어 보여준다(중복 제거·최신순 정렬은 news.py가 이미 처리)
+    briefing_grouped = _briefing_grouped(news_briefing)
+    if briefing_grouped:
+        briefing_title = "### 📰 데일리 기사 정리 (AI 요약 없음 — 종목별 원문 목록)\n"
+        news_archive += f"\n\n{briefing_title}{briefing_grouped}"
+        news_telegram += f"\n\n{briefing_title}" + tg_format.fold(
+            f"오늘 수집 기사 {len(news_briefing or [])}건 — 눌러서 펼치기",
+            briefing_grouped,
         )
 
     log.warning("열화 리포트 생성 (LLM 없이 원자료 기반): %s / 화면 %d장, 지표 %d건, 전사 %d자",
@@ -670,10 +968,12 @@ def _fallback_report(
     return {
         "title_keyword": "원자료시황",
         "telegram_text": sihwang_md,
-        "markdown_report": f"{sihwang_full}\n\n{news_md}",
+        "markdown_report": f"{sihwang_full}\n\n{news_archive}",
         "holdings_mentioned": holdings_mentioned,
         # sihwang=텔레그램용(발췌) / sihwang_md=옵시디안용(전사 전문)
-        "reports": {"sihwang": sihwang_md, "sihwang_md": sihwang_full, "news": news_md},
+        # news=저장용(접지 않음) / news_telegram=전송용(접힘)
+        "reports": {"sihwang": sihwang_md, "sihwang_md": sihwang_full,
+                   "news": news_archive, "news_telegram": news_telegram},
     }
 
 
@@ -698,13 +998,201 @@ JSON 객체로만 답하세요:
 (B) 음성 전사:
 {transcript[:40000]}"""
     try:
-        data = _parse_json_obj(_call_llm(models, prompt, max_tokens=4000))
+        # 4000으로는 gemini-2.5의 사고 토큰과 겹쳐 최대 40개 종목 JSON이 잘렸다
+        # (2026-07-26/27 실측: 확보 7,626자/8,922자에서 MAX_TOKENS로 두 모델 다 실패
+        #  → verified_mentions=[] → 캡처 링크가 전부 검색 URL로 떨어짐)
+        data = _parse_json_obj(_call_llm(models, prompt, max_tokens=12000))
         mentions = data.get("mentions", [])
         log.info("언급 종목 추출: %d개", len(mentions))
         return mentions
     except Exception as e:
         log.warning("종목 추출 실패(리포트는 계속 진행): %s", e)
         return []
+
+
+def _simple_report(
+    settings: dict,
+    prompt: str,
+    fallback_title: str,
+    fallback_body: str,
+    out_dir: Path,
+) -> dict:
+    """noon/night처럼 SIHWANG/NEWS 2분할이 필요 없는 단일 섹션 리포트 공통 골격.
+
+    출력 형식은 `===TITLE===`/`===BODY===`/`===END===` — us/kr의 6구획 형식보다
+    훨씬 가볍다. LLM 실패 시 `fallback_title`/`fallback_body`(호출부가 미리 만든
+    원자료 기반 문구)로 대체해, us/kr과 마찬가지로 LLM이 완전히 막혀도 리포트가
+    반드시 발행된다.
+    """
+    title, body = fallback_title, fallback_body
+    try:
+        text = _call_llm(settings["models"], prompt, max_tokens=6000)
+        sec = _split_marked(text)
+        t = (sec.get("TITLE", "").splitlines() or [""])[0].strip()
+        b = sec.get("BODY", "").strip()
+        if not t or not b:
+            raise ValueError(f"구분선 형식이 아닙니다: {text[:200]}")
+        title, body = t, b
+    except Exception as e:
+        log.error("리포트 생성 실패 → 원자료 기반 열화 리포트로 전환: %s", e)
+
+    body = _strip_search_links(body)
+    data = {"title_keyword": title, "telegram_text": body, "markdown_report": body,
+            "reports": {"sihwang": body, "sihwang_md": body, "news": ""}}
+    (out_dir / "report.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "report.md").write_text(body, encoding="utf-8")
+    log.info("리포트 생성 완료: 키워드=%s", title)
+    return data
+
+
+def generate_noon_report(
+    settings: dict,
+    vision_results: list[dict],
+    transcript: str,
+    kr_indices: list[dict],
+    out_dir: Path,
+) -> dict:
+    """12시 국내 시황(겸손은힘들다 "12시에 만나요") — 요약 + 장중 KR 지수만.
+
+    us/kr과 달리 종목기사 검색·보유종목 체크가 없다(사용자 확정: 12:00~12:20
+    주요 시황·화면캡처·전사 요약만, 장중 KR 지수 현황). 그래서 `generate_report()`
+    전체를 타지 않고 `_simple_report()`로 가볍게 만든다.
+
+    2026-07-28 사용자 확정(실제 방송 스크린샷): 오프닝 이후 8~12분대에 "정오의
+    Money 뉴스" 고정 코너(코스피·코스닥·환율 수치 + 헤드라인 4줄)가 매일 나온다 —
+    이게 이 리포트의 핵심 소스라 프롬프트에서 명시적으로 우선순위를 준다.
+    """
+    disclaimer = settings["report"]["disclaimer"]
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+    material = _material_digest(vision_results)
+    idx_asof = _asof_label(kr_indices)
+    idx_title = f"장중 KR 지수 ({idx_asof})" if idx_asof else "장중 KR 지수"
+    idx_block = "\n".join(_quote_line(q) for q in kr_indices) or "• 조회 실패"
+
+    prompt = f"""당신은 한국 개인투자자를 위한 시황 애널리스트입니다.
+겸손은힘들다 "12시에 만나요"({today}) 12:00~12:20 방송의 화면 캡처와 음성 전사를
+바탕으로 짧은 장중 리포트를 쓰세요.
+
+- ⚠️ **"정오의 Money 뉴스" 화면을 최우선으로 반영하세요** — 매일 나오는 고정
+  코너로, 코스피·코스닥·환율 수치(예: "2026.07.28 12시00분 기준")와 헤드라인
+  4줄(예: "中 DUV 노광장비 자체 생산설에 ASML 8%대 급락")로 구성됩니다.
+  [방송 화면 캡처 원문]에 이 화면이 있으면 수치는 정확히, 헤드라인은 전부
+  살려서 반영하세요 — 빠뜨리지 마세요.
+- 📌 시황 요약: 오전장 흐름과 진행자 코멘트를 3~5줄로. 완곡 표현("~것으로 보입니다")
+  대신 단정형 명사구로, 서술 문단이 아니라 불릿 위주로.
+- 📰 정오의 Money 뉴스 헤드라인: 화면에 나온 헤드라인을 불릿으로 그대로.
+- 💹 {idx_title}: 아래 검증 시세를 불릿으로 그대로 옮기세요(숫자를 새로 만들지 마세요).
+- 표(`| |`)는 쓰지 마세요. 검색 결과 페이지 URL은 쓰지 마세요.
+- 마지막 줄에 디스클레이머: {disclaimer}
+
+출력 형식:
+===TITLE===
+오늘 12시 방송 핵심 키워드 (파일명용)
+===BODY===
+📌 시황 요약
+...
+📰 정오의 Money 뉴스 헤드라인
+...
+💹 {idx_title}
+{idx_block}
+...(디스클레이머로 끝)
+===END===
+
+[장중 KR 지수 검증 시세]
+{json.dumps(kr_indices, ensure_ascii=False)}
+
+[방송 화면 캡처 원문 — "정오의 Money 뉴스" 화면을 최우선으로 찾아 반영]
+{material}
+
+[음성 전사 (20분 전체)]
+{transcript[:20000]}"""
+
+    banner = "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
+    fallback_body = (
+        f"{banner}📌 12시 국내 시황 ({today})\n{_clean_digest_fallback(vision_results)}\n\n"
+        f"💹 {idx_title}\n{idx_block}\n\n{disclaimer}"
+    )
+    return _simple_report(settings, prompt, "12시시황", fallback_body, out_dir)
+
+
+def generate_night_digest(
+    settings: dict,
+    slots: list[dict],
+    out_dir: Path,
+) -> dict:
+    """22:00~06:00 야간 미장 라이브(오선의 미국 증시 라이브) 8슬롯 종합.
+
+    슬롯 하나하나는 리포트를 만들지 않는다(캡처 5분·저장만) — 06시에 이 함수가
+    `obsidian_archive.read_night_slots()`가 모아온 슬롯을 한 번에 종합해
+    ① 지수 변동 궤적(장초반→장중→마감) ② 주요 이벤트 2~3건 결과를 만든다.
+    """
+    disclaimer = settings["report"]["disclaimer"]
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+
+    def _slot_order(s: dict) -> int:
+        # 22:00~05:59 구간이라 자정을 넘어간다 — 00~05시는 22~23시 다음으로
+        # 취급해야 시간순이 된다 (문자열/숫자 그대로 정렬하면 00이 22보다 앞에 옴)
+        try:
+            h = int(s.get("hour_label", "0"))
+        except ValueError:
+            h = 0
+        return h + 24 if h < 12 else h
+
+    ordered_slots = sorted(slots, key=_slot_order)
+
+    slot_texts = []
+    for s in ordered_slots:
+        material = _material_digest(s.get("vision_results") or [])
+        if material:
+            slot_texts.append(f"### {s.get('hour_label', '?')}시\n{material}")
+    slots_block = "\n\n".join(slot_texts) or "(수집된 슬롯 없음)"
+
+    fallback_slot_texts = []
+    prev_clean = None
+    for s in ordered_slots:
+        clean = _clean_digest_fallback(s.get("vision_results") or [])
+        if clean == "(자료화면 없음)":
+            continue
+        hour = s.get("hour_label", "?")
+        if clean == prev_clean:
+            # 화면이 안 바뀐 슬롯을 그대로 반복 표시하지 않는다(2026-07-28 실장애:
+            # 인접 프레임이 거의 동일한 텍스트를 계속 반복해 열화 리포트가 벽글씨가 됨)
+            fallback_slot_texts.append(f"### {hour}시\n(직전 슬롯과 동일 — 변동없음)")
+        else:
+            fallback_slot_texts.append(f"### {hour}시\n{clean}")
+        prev_clean = clean
+    slots_fallback_block = "\n\n".join(fallback_slot_texts) or "(수집된 슬롯 없음)"
+
+    prompt = f"""당신은 한국 개인투자자를 위한 시황 애널리스트입니다.
+"오선의 미국 증시 라이브"({today} 밤~오늘 새벽, 22:00~06:00 KST) 방송을 매시 정각
+5분씩 캡처한 8개 슬롯 결과를 종합해 아침 리포트를 쓰세요. 슬롯은 시간순입니다.
+
+- 📊 지수 변동 궤적: 화면에 나온 주요 지수(다우/나스닥/S&P500)가 장초반→장중→마감
+  구간에서 어떻게 움직였는지 방향(상승/하락/보합) 흐름으로 요약하세요.
+  예: "나스닥: 상승 → 하락 → 보합". 슬롯에 없는 구간은 "확인 불가"로.
+- 📌 주요 이벤트: 슬롯 화면에 나온 미국 일일 주요 이벤트 2~3개를 골라
+  각각 `• **이벤트명** — 결과 한 줄`로. 완곡 표현 금지, 단정형 명사구로.
+- 표는 쓰지 마세요. 검색 결과 페이지 URL은 쓰지 마세요.
+- 마지막 줄에 디스클레이머: {disclaimer}
+
+출력 형식:
+===TITLE===
+오늘 야간 미장 핵심 키워드 (파일명용)
+===BODY===
+📊 지수 변동 궤적
+...
+📌 주요 이벤트
+...
+(디스클레이머로 끝)
+===END===
+
+[시간대별 슬롯 캡처 원문]
+{slots_block}"""
+
+    banner = "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
+    fallback_body = f"{banner}📊 야간 미장 슬롯 원문 ({today})\n{slots_fallback_block}\n\n{disclaimer}"
+    return _simple_report(settings, prompt, "야간미장", fallback_body, out_dir)
 
 
 def generate_report(
@@ -734,7 +1222,8 @@ def generate_report(
     today = now_kst().strftime("%Y-%m-%d (%a)")
     base_kst = scfg.get("start_kst", "00:00")
     vwin = scfg.get("verbatim_window")
-    captures = _capture_blocks(vision_results, verified_mentions, base_kst, vwin)
+    captures = _capture_blocks(vision_results, verified_mentions, base_kst, vwin,
+                               news_briefing=news_briefing)
     # ===NEWS===(종목 기사검색)의 대상 — 캡처 화면에 실제로 뜬 미장 종목
     capture_us = us_stocks_in_captures(vision_results)
     # 본문 노출 종목(나머지는 접기 블록으로)
@@ -754,12 +1243,15 @@ def generate_report(
     # 한 건에 다 담으면 기사 목록이 본문을 잠식해 읽히지 않았다(실측 스크린샷).
     common_order = """### 리포트 ① 시황 (===SIHWANG===) — 아래 1~5 순서와 번호를 그대로
 
-1) 📌 **3protv 요약** — 방송 핵심을 압축하고, 이어서 **미국장 정리**와 **오늘 국내장 전망**을
-   각각 소제목으로 씁니다.
-   - 미국장: 지수 흐름·주도 섹터·매크로 이슈
+1) 📌 **3protv 요약** — 방송 핵심을 압축하고, 이어서 **오늘 국내장 전망**과 **미국장 정리**를
+   각각 소제목으로 씁니다(이 순서로 — 국내장 먼저, 미국장은 참고자료라 뒤).
    - 국내장 전망: KOSPI·KOSDAQ 예상 방향과 근거, 반도체(삼성전자·SK하이닉스)에 미치는 영향,
      환율·외국인 수급 관점. **코스피 야간선물**은 방송 화면값 우선 → 없으면 EWY로 갈음(대용 명시)
      → 둘 다 없으면 "확인 불가"(추측 금지)
+   - 미국장: 지수 흐름·주도 섹터·매크로 이슈. **kr 세션이면 이 소제목 바로 앞 줄에
+     `---미장참고---` 한 줄만 단독으로 넣으세요**(다른 글자 없이) — 국내장 전망이
+     먼저 읽히도록 미국장 부분을 접습니다. us 세션은 이 마커를 넣지 마세요
+     (미국장이 본문 주제입니다).
    - 방송에서 진행자가 국내장 전망을 언급했다면 그 내용을 우선 반영
 
 2) 💹 **주요 지표 전일대비 현황** — 종가 기준일은 섹션 제목에 한 번만
@@ -772,21 +1264,57 @@ def generate_report(
    - M7 + AI·반도체: 애플·MS·알파벳·아마존·엔비디아·메타·테슬라 / 인텔·AMD·브로드컴·오라클
    - 변동성: VIX
 
-3) 🖼 **8시 전후 캡처화면 정리** — [방송 화면 캡처] 블록을 그대로 활용해 캡처당 2줄
-   (`**HH:MM** · 종목` / `🔗 링크`). 시각은 `08:00`처럼 짧게.
+3) 🖼 **8시 전후 캡처화면 정리** — [방송 화면 캡처] 블록을 그대로 활용하되
+   **같은 종목은 한 덩어리로 합치고, 시각(HH:MM)은 쓰지 마세요.**
+   - 종목명을 굵게 한 줄(`**아마존닷컴**`) 쓰고, 그 종목의 캡처 내용을 그 아래
+     `- ` 불릿으로 모으세요. 같은 종목이 6번 나와도 제목은 **한 번만** 씁니다
+     (2026-08-02 실측: 아마존닷컴 6줄·Apple 4줄이 제목까지 그대로 반복됐습니다).
+   - 내용이 겹치면 한 줄로 합치고, 종목 순서는 방송에 나온 순서를 유지하세요.
+   - 링크 줄은 그 종목 덩어리 **맨 아래**에 `🔗 `로 시작하는 **한 줄**로 모으세요
+     (코드가 이 줄들을 모아 접습니다).
+   - 기사 제목을 그대로 붙이지 말고 **키워드로 줄이세요** — `[운용 & Now] 'TIGER
+     미국필라델피아반도체나스닥 ETF' 순자산 6조원 돌파...` → `[TIGER 미국반도체 ETF
+     순자산 6조 돌파](url)`. 20자 안팎이면 충분합니다.
+   - ⚠️ **영문 캡처는 반드시 한국어로 옮겨 쓰세요.** 미장 화면은 블룸버그·
+     트레이딩뷰 등 영문 헤드라인이라 원문 그대로 실으면 읽히지 않습니다
+     (2026-07-29 실측: "Micron's stock sinks toward worst monthly drop in 11
+     years as China fears escalate"가 영문 그대로 나갔습니다).
+     · **수치·티커·기업명은 원문 그대로** 두고 서술만 한국어로:
+       `Micron 166.84 −11.34% · 중국 리스크 확산에 11년래 최악의 월간 낙폭`
+     · 잘려 있는 문장(`…`)은 **추측해서 채우지 마세요** — 확인된 부분까지만.
+     · 한국어로 이미 적힌 캡처는 그대로 둡니다.
    - `화면 원문`으로 표시된 캡처(07:45~08:10 흰 배경 요약 슬라이드)는 **요약하지 말고
      화면의 줄 구성을 그대로** 옮기세요. 항목 순서·구분자(/)·수치를 원문대로 유지.
    - ⚠️ 이 구간은 **흰 배경 그림·슬라이드만** 대상입니다. 개별 종목 시세판
      (종목명·현재가·거래량 나열)은 이미 제외돼 있으니 **개별 주가를 끌어와 쓰지 마세요.**
+   - ⚠️ **매일 나오는 요약 슬라이드 3종은 절대 누락하지 마세요** — 화면 캡처 블록에
+     있으면 반드시 전부 옮기세요:
+     ① `전일, 해외 시장 흐름 및 특징` ② `전일, 국내 시장 흐름 및 특징`
+     ③ `오늘 시황 전망 및 투자 대응`.
+     특히 ②의 **수급 3행**(코스피/코스닥 개인·외국인·기관 순매수, 금투·투신 세부)은
+     숫자 배치 자체가 정보이니 요약하지 말고 원문 그대로 옮기세요.
 
 4) 💼 **관심종목 업데이트** — 보유/관심 종목의 전일 종가·등락률 + 방송 언급 여부.
-   언급된 종목은 줄 앞에 **📡** 를 붙이고 맥락을 한 줄로, 안 된 종목은 "언급 없음".
-   (✅·체크표시는 쓰지 마세요 — 방송 언급 표시는 📡 하나로 통일합니다.)
+   ⚠️ **언급 여부는 이모지 하나로만 표시합니다 — 설명 문구를 쓰지 마세요.**
+   - 방송에서 언급된 종목: 줄 앞에 **🎤** 하나만 붙이고 **맥락은 쓰지 마세요.**
+   - 언급되지 않은 종목: **아무 표시도 붙이지 마세요.** `(언급 없음)`이라고 쓰면 안 됩니다
+     (2026-08-02 실측: 13줄 중 11줄이 "(언급 없음)"이라 줄바꿈만 늘렸습니다).
+   - 예) `- 🎤 마이크론: 823.03 📉 ▼5.90%` / `- 삼성전자: 262,500원 📈 ▲26.81%`
+   (✅·체크표시·📡는 쓰지 마세요 — 방송 언급 표시는 🎤 하나로 통일합니다.)
 
 5) 🔎 **수급 · 변동성**:
-   - **전일 수급주체 수급동향**: [수급 데이터]의 investors(기관·외국인·개인 순매수, 억원)
-   - **순매수 top10 / 순매도 top10**: [수급 데이터]의 top
-   - **ETF 등락 상위/하위**: [수급 데이터]의 etf
+   - **수급주체 요약**: [수급 데이터]의 summary를 **개인 / 외국인 / 기관합계 3줄로
+     먼저** 쓰고, 각 줄에 delta가 있으면 `(전일比 ±N)`을 붙이세요. summary.date가
+     그 수급의 기준일입니다 — **날짜를 임의로 '전일'이라고 바꿔 쓰지 마세요.**
+   - 위 3줄 바로 다음 줄에 **`---수급상세---`를 단독으로** 넣고, 그 아래에
+     ① 연기금·투신·사모 등 "그외" 주체 ② 순매수 top10 / 순매도 top10
+     ③ ETF 등락 상위/하위를 이어 쓰세요 — 코드가 이 마커 아래 전부를 접습니다.
+     핵심 3주체만 바로 보이고 나머지는 눌러야 펼쳐지게 하려는 목적이니
+     마커 위치를 반드시 지키세요.
+   - **ETF 등락 상위/하위**: [수급 데이터]의 etf. **name(종목명)을 그대로 쓰고
+     ticker는 쓰지 마세요** — 코드만 나열하면 사람이 못 읽습니다. 단 name이 코드
+     형태(예: "0197X0")로 와 있으면 **그대로 두세요 — 이름을 추측해 채우지 마세요.**
+   - 위 목록들은 **한 줄에 한 종목**씩 쓰세요 (쉼표로 이어붙이지 말 것)
    - **VIX (미장·국장)**: 미장은 검증 시세의 VIX, 국장은 VKOSPI(코스피 변동성지수)가
      검증 시세에 있으면 사용하고 없으면 "확인 불가"로 적으세요
    - 수급 데이터가 비어 있으면 그 항목만 "조회 실패"로 적고 넘어가세요 (숫자 창작 금지)
@@ -802,16 +1330,36 @@ def generate_report(
 - 링크는 [언급 종목 검증 시세]의 `news` 배열과 [뉴스 브리핑 기사]에 주어진 url만 사용.
   **url을 절대 새로 만들지 마세요.** 마크다운 링크 형식 `[제목](url)`을 반드시 지키세요
   (텔레그램에서 제목만 보이는 하이퍼링크로 변환됩니다).
+  ⚠️ **`search.naver.com`·`google.com/search`처럼 검색 결과 페이지 URL을 링크로
+  쓰지 마세요 — 그건 기사가 아닙니다.** 해당 종목의 실제 기사 url이 위 두 곳에
+  없으면 링크 없이 종목명만 쓰고 다음 종목으로 넘어가세요.
 - ⚠️ **[주요종목] 목록에 있는 종목을 먼저** 쓰고, 다 쓴 뒤 `---기타---` 를 한 줄로 넣고
   그 아래에 나머지 종목을 쓰세요. `---기타---` 아래는 접기(펼치기) 블록이 되어
   눌러야 보입니다. 표식을 빠뜨리지 마세요.
-- 겹치는 기사는 묶어 사안별 3줄 이내로 요약하세요."""
+- 겹치는 기사는 묶어 사안별 3줄 이내로 요약하세요.
+
+### 리포트 ③ 데일리 주요 종목기사 정리 (===DAILY===)
+
+[뉴스 브리핑 기사]에 오늘 수집된 기사 전체가 있습니다. 이걸 **종목별이 아니라
+이슈(사안) 단위로 묶어** 정리하세요 — ===NEWS===는 종목 기준, 이건 오늘 하루 전체를
+관통하는 사안 기준이라 관점이 다릅니다.
+- 같은 사안을 다루는 기사는 묶어 하나의 이슈로. 상위 6~8개 이슈만, 중요도 순.
+- 이슈당 정확히 2줄: 1줄 `• **이슈 제목** — 핵심 내용 한 줄`,
+  2줄 `  🔗 [기사제목](url) · [기사제목](url)` (url은 [뉴스 브리핑 기사]에 있는 것만)
+- [보유/관심 종목 목록]이 걸린 이슈는 앞쪽에 배치하세요.
+- 위 화법 규칙(완곡 표현 금지·단정형 명사구·인용 압축)을 여기도 그대로 적용하세요.
+- [뉴스 브리핑 기사]가 비어 있으면 "오늘 수집된 기사가 없습니다"라고만 쓰세요."""
 
     session_focus = {
         "us": "이 방송은 전일 미국장 마감 리뷰입니다. 1번의 미국장 정리를 특히 두껍게 쓰세요.",
         "kr": "이 방송은 당일 한국장 개장 전 전망입니다. 1번의 국내장 전망과 3번(8시 전후 화면)을 "
               "특히 두껍게 쓰고, 미국 시황과의 연결 고리는 아래 '오늘 미국 세션 리포트'를 참고하세요.",
     }[session]
+    # 3번 섹션 제목은 kr 기준("8시 전후")으로 적혀 있어 us(05:55~06:40)엔 안 맞는다
+    # — 05:55 캡처에 "8시 전후"라는 제목이 붙어 나갔다(2026-07-29 실측).
+    if session == "us":
+        common_order = common_order.replace(
+            "8시 전후 캡처화면 정리", "미국장 캡처화면 정리")
     session_goal = f"{session_focus}\n\n{common_order}"
 
     us_ctx = f"\n\n[오늘 미국 세션 리포트 (참고)]\n{us_context_md[:8000]}" if us_context_md else ""
@@ -860,18 +1408,21 @@ def generate_report(
 공통 요구사항:
 - ⚠️ **섹션 순서는 위 1~5를 절대 지키세요.** 화면 캡처는 **3번 자리**입니다 —
   리포트 맨 앞에 두지 마세요. 1번(요약)부터 순서대로 시작해야 합니다.
-- 화면 캡처(3번)는 **캡처 1장당 2줄**:
-    1줄: `**HH:MM** · 종목명들` 다음 줄에 그 화면의 핵심 내용 한 줄
-    2줄: `🔗 [종목명](기사url) · [종목명](기사url)`
-  시각은 `06:03`처럼 **짧게(HH:MM)** — 초 단위나 `[00:03:15]` 같은 표기는 쓰지 마세요.
+- 화면 캡처(3번)는 **종목 단위로 묶어** 쓰세요 — 캡처 1장당 한 덩어리가 아닙니다:
+    `**종목명**` 한 줄 → 그 아래 그 종목 캡처 내용들을 `- ` 불릿으로
+    → 맨 아래 `🔗 [종목명](기사url) · [종목명](기사url)` 한 줄
+  ⚠️ **시각은 쓰지 마세요** — `06:03`·`[00:03:15]` 어떤 형태도 넣지 않습니다.
+  같은 종목이 여러 캡처에 나오면 제목을 반복하지 말고 한 덩어리로 합치세요.
   아래 [방송 화면 캡처] 블록에 이미 이 형식으로 정리돼 있으니 **그 내용과 링크를
-  그대로 활용**하고, url을 새로 만들지 마세요.
+  그대로 활용**하고, url을 새로 만들지 마세요. 그 블록에 링크가 없는 종목은
+  **검색 URL을 만들어 채우지 말고 링크 없이 종목명만** 남기세요.
 - **`화면 원문`으로 표시된 캡처(07:45~08:10 요약 슬라이드)는 요약하지 말고
   화면의 줄 구성을 그대로** 옮기세요 — 항목 순서·구분자·수치를 원문대로 유지.
   단 **시세 표처럼 줄이 매우 많은 화면은 상위 15줄까지만** 옮기고 `…(이하 생략)`으로
   줄이세요. 원문 보존이 다른 섹션(1·2·4·5)을 밀어내면 안 됩니다.
 - 💹 주요 지수/자산 변동 섹션 포함 (아래 검증 시세 사용)
-- 📡 보유종목 언급 체크: 아래 보유/관심 종목이 방송에서 언급됐는지 확인. 언급됐으면 어떤 맥락인지, 안 됐으면 "언급 없음"으로.
+- 🎤 보유종목 언급 체크: 아래 보유/관심 종목이 방송에서 언급됐는지 확인. **언급된 종목만**
+  줄 앞에 🎤를 붙이고, 언급 안 된 종목은 아무 표시도 붙이지 마세요("언급 없음" 금지).
 - ⚠️ **ETF는 리포트에 넣지 마세요.** 삼프로TV는 시황에서 ETF를 다루지 않고 화면의
   ETF(KODEX·TIGER·ACE·PLUS·SOL 등, 커버드콜·인버스·레버리지 포함)는 전부 협찬 광고입니다.
   단 5번의 'ETF 등락 상위/하위'는 [수급 데이터]에서 온 시장 통계이므로 예외입니다.
@@ -903,6 +1454,8 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
 마지막 줄에 디스클레이머를 넣으세요.
 ===NEWS===
 리포트 ② 종목 기사검색 — 주요종목 먼저, 그다음 `---기타---` 한 줄, 그 아래 나머지 종목.
+===DAILY===
+리포트 ③ 데일리 주요 종목기사 정리 — 이슈 단위 6~8개, 항목당 2줄.
 ===HOLDINGS===
 보유종목마다 한 줄씩: 종목명 | O 또는 X | 언급 맥락
 (예: 삼성전자 | O | 미 상무장관이 미국 생산 확대 촉구
@@ -947,6 +1500,16 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
                 raise RuntimeError(f"리포트 생성 결과에 {key} 누락")
         if not data["reports"]["sihwang"].strip():
             raise RuntimeError("리포트 생성 결과에 시황 본문(===SIHWANG===) 누락")
+        # LLM의 ===DAILY=== 요약 아래에 오늘 수집된 기사 원문 전체를 접어서 붙인다 —
+        # 요약이 놓친 기사도 원하면 펼쳐서 확인할 수 있게 (검증·투명성 목적)
+        raw_articles = _briefing_lines(news_briefing)
+        if raw_articles:
+            fold_block = tg_format.fold(
+                f"오늘 수집 기사 원문 {len(news_briefing or [])}건 — 눌러서 펼치기",
+                raw_articles,
+            )
+            data["reports"]["news"] = f"{data['reports']['news']}\n\n{fold_block}"
+            data["markdown_report"] = f"{data['markdown_report']}\n\n{fold_block}"
     except Exception as e:
         log.error("LLM 리포트 생성 실패 → 원자료 기반 열화 리포트로 전환: %s", e)
         data = _fallback_report(
@@ -955,8 +1518,115 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
             news_briefing=news_briefing, flows=flows,
         )
 
+    # 최후 안전장치 — LLM이 프롬프트를 무시하고 검색 결과 페이지 URL을 직접
+    # 만들어냈을 경우에 대비해 링크만 벗긴다 (실제 기사 URL은 건드리지 않음)
+    for key in ("telegram_text", "markdown_report"):
+        data[key] = _strip_search_links(data.get(key, ""))
+    data["reports"] = {k: _strip_search_links(v) for k, v in data["reports"].items()}
+
     out_file = out_dir / "report.json"
     out_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "report.md").write_text(data["markdown_report"], encoding="utf-8")
     log.info("리포트 생성 완료: 키워드=%s", data["title_keyword"])
     return data
+
+
+# ─────────────────── ETF 포트폴리오 리뷰 (KRX PDF 기반) ───────────────────
+
+
+def _fmt_qty(v: float) -> str:
+    """수량 증감을 부호 포함해 읽기 쉽게 (소수 계약수도 있어 정수면 정수로)."""
+    sign = "+" if v > 0 else "−"
+    a = abs(v)
+    return f"{sign}{a:,.0f}" if a >= 1 or a == 0 else f"{sign}{a:,.2f}"
+
+
+def _fmt_pp(v: float | None) -> str:
+    """비중 변화(%p). None이면 빈 문자열."""
+    if v is None:
+        return ""
+    return f"{'+' if v > 0 else '−'}{abs(v):.2f}%p"
+
+
+def _move_tail(m: dict) -> str:
+    """수량 변동 한 줄의 꼬리 — 현재 비중과 비중 변화(참고).
+
+    비중은 주가 등락이 섞인 값이라 매매 근거가 아니라 '이 종목이 포트에서 얼마나
+    큰가'를 보여주는 맥락으로만 붙인다.
+    """
+    if m.get("weight") is None:
+        return ""
+    tail = f" · 비중 {m['weight']:.2f}%"
+    dw = _fmt_pp(m.get("dw"))
+    return f"{tail} ({dw})" if dw else tail
+
+
+def _etf_block(name: str, ticker: str, diff: dict, prev_date: str) -> str:
+    """ETF 1종의 전일 대비 구성 변화 블록.
+
+    수량(실매매)을 본문에, 비중 변화는 괄호로 덧붙인다 — 비중만 크게 움직이고
+    수량이 그대로면 그건 매매가 아니라 주가효과라 오해를 부른다.
+    """
+    lines = [f"■ **{name}** ({ticker})"]
+    head = f"구성 {diff['count_today']}종목"
+    if prev_date:
+        head += f" · {prev_date[4:6]}/{prev_date[6:8]} 대비"
+    if diff.get("has_qty"):
+        head += f" · 매수 {diff['n_buys']} / 매도 {diff['n_sells']}"
+    lines.append(head)
+    # 바스켓(설정단위) 자체가 움직였으면 개별 매매와 헷갈리지 않게 따로 알린다
+    shift = diff.get("basket_shift") or 0
+    if abs(shift) >= 1:
+        lines.append(f"⚙️ 설정단위 전체 {_fmt_pp(shift).replace('%p', '%')} 조정"
+                     " *(개별 매매 아님)*")
+
+    if diff["added"]:
+        items = ", ".join(
+            f"{r['name']}" + (f" ({r['weight']:.2f}%)" if r.get("weight") is not None else "")
+            for r in diff["added"])
+        lines.append(f"🆕 신규편입: {items}")
+    if diff["removed"]:
+        items = ", ".join(r["name"] for r in diff["removed"])
+        lines.append(f"🚪 편출: {items}")
+
+    if diff.get("has_qty"):
+        if diff["buys"]:
+            lines.append("📈 매수(수량↑)")
+            for m in diff["buys"]:
+                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{_move_tail(m)}")
+        if diff["sells"]:
+            lines.append("📉 매도(수량↓)")
+            for m in diff["sells"]:
+                lines.append(f"· {m['name']} {_fmt_qty(m['dq'])}주{_move_tail(m)}")
+        if not diff["buys"] and not diff["sells"] and not diff["added"] and not diff["removed"]:
+            lines.append("· 전일 대비 수량 변동 없음")
+    else:
+        # 수량 컬럼이 없으면 비중으로 대체하되, 주가효과가 섞였음을 명시한다
+        if diff["weight_up"]:
+            items = ", ".join(f"{m['name']} {_fmt_pp(m['dw'])}" for m in diff["weight_up"])
+            lines.append(f"📈 비중 확대: {items}")
+        if diff["weight_down"]:
+            items = ", ".join(f"{m['name']} {_fmt_pp(m['dw'])}" for m in diff["weight_down"])
+            lines.append(f"📉 비중 축소: {items}")
+        if diff["weight_up"] or diff["weight_down"]:
+            lines.append("  *(수량 미공시 — 주가 등락에 의한 변동이 섞여 있습니다)*")
+
+    return "\n".join(lines)
+
+
+def generate_etf_review(settings: dict, results: list[dict]) -> dict:
+    """ETF 포트폴리오 리뷰 — KRX 공시 PDF의 전일 대비 구성 변화.
+
+    LLM을 쓰지 않는다. 수량·비중 차이는 순수 계산이라 요약이 필요 없고, Gemini
+    무료 할당량(하루 20건)을 여기에 쓰면 정작 방송 리포트가 밀린다.
+
+    results: [{"name", "ticker", "diff", "prev_date"}] — 조회 실패분은 호출부가 뺀다.
+    """
+    today = now_kst().strftime("%Y-%m-%d (%a)")
+    blocks = [_etf_block(r["name"], r["ticker"], r["diff"], r.get("prev_date", ""))
+              for r in results]
+    body = "\n\n".join(blocks) or "(조회된 ETF가 없습니다)"
+    note = ("ℹ️ KRX 공시 납입자산구성내역(PDF) 기준. 비중은 주가 등락으로도 변하므로 "
+            "실제 운용 매매는 **수량 변화**로 판정합니다.")
+    md = f"📦 **ETF 포트폴리오 리뷰** ({today})\n\n{body}\n\n{note}\n\n{settings['report']['disclaimer']}"
+    return {"title_keyword": "ETF구성변화", "telegram_text": md, "markdown_report": md}

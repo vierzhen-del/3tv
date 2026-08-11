@@ -21,6 +21,16 @@ def test_link_shows_title_only():
     assert "https://search.naver.com" not in html.split("<a href=", 1)[1].split(">", 1)[1]
 
 
+def test_obsidian_deeplink_becomes_clickable():
+    """2026-07-28 실물 확인: obsidian:// 링크가 하이퍼링크로 안 바뀌고 [텍스트](URL)가
+    그대로 노출됐다 — _LINK_RE가 http(s)만 매칭해서였다."""
+    md = "🗂 [옵시디안에서 열기](obsidian://search?vault=vierzhen_home&query=3protv%EC%95%BC%EA%B0%84_20260728)"
+    html = tg_format.to_telegram_html(md)
+    assert '<a href="obsidian://search?vault=vierzhen_home&amp;query=' in html
+    assert "옵시디안에서 열기</a>" in html
+    assert "[옵시디안에서 열기](" not in html
+
+
 def test_bold_and_header():
     html = tg_format.to_telegram_html("## 요약\n**06:14** 나스닥 강세")
     assert "<b>요약</b>" in html
@@ -98,6 +108,41 @@ def test_split_plaintext_unchanged():
     assert "".join(c.replace("\n", "") for c in chunks) == text.replace("\n", "")
 
 
+class _FakeResp:
+    def __init__(self, status=200, text=""):
+        self.status_code = status
+        self.text = text
+
+
+def test_send_telegram_fans_out_to_comma_separated_chat_ids(monkeypatch):
+    """TELEGRAM_CHAT_ID에 콤마로 여러 id를 넣으면 각 방에 모두 보내야 한다
+    (기존 대상 유지 + 새 단체방 추가 시나리오)."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "111, -100222")
+    seen = []
+
+    def fake_post(url, json=None, timeout=None):
+        seen.append(json["chat_id"])
+        return _FakeResp(200)
+
+    monkeypatch.setattr(tg.requests, "post", fake_post)
+    assert tg.send_telegram("hello") is True
+    assert seen == ["111", "-100222"]
+
+
+def test_send_telegram_single_chat_id_still_works(monkeypatch):
+    """콤마 없는 기존 단일 chat id 설정은 그대로 동작해야 한다(회귀 방지)."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "111")
+    seen = []
+    monkeypatch.setattr(
+        tg.requests, "post",
+        lambda url, json=None, timeout=None: seen.append(json["chat_id"]) or _FakeResp(200),
+    )
+    assert tg.send_telegram("hello") is True
+    assert seen == ["111"]
+
+
 def test_strip_tags_keeps_url_visible():
     """HTML 파싱 실패 시 평문 폴백 — 링크는 'text (url)'로 살아남는다."""
     out = tg._strip_tags('<b>제목</b> <a href="https://a.b/1">기사</a> &amp; 끝')
@@ -120,3 +165,59 @@ def test_window_offsets_invalid():
     assert window_offsets("07:45", None) is None
     assert window_offsets("07:45", ["08:05", "07:50"]) is None   # 뒤집힘
     assert window_offsets("07:45", ["아침"]) is None
+
+
+def test_link_label_with_brackets_still_converts():
+    """2026-08-01 실물: 기사 제목이 '[운용 & Now]'처럼 대괄호로 시작하면
+    링크 변환이 실패해 마크다운 원문이 그대로 텔레그램에 노출됐다."""
+    md = ("🔗 [[운용 & Now] 'TIGER 미국필라델피아반도체나스닥 ETF' 순자산 6조원 돌파..."
+          "](https://www.ebn.co.kr/news/articleView.html?idxno=1718121)")
+    html = tg_format.to_telegram_html(md)
+    assert '<a href="https://www.ebn.co.kr/news/articleView.html?idxno=1718121">' in html
+    assert "](http" not in html          # 마크다운 원문이 남으면 안 된다
+    assert "운용 &amp; Now" in html      # 제목은 그대로 보존
+
+
+def test_link_label_with_mid_brackets():
+    html = tg_format.to_telegram_html("🔗 [속보 [단독] 반도체 수출 급증](https://a.b/2)")
+    assert '<a href="https://a.b/2">속보 [단독] 반도체 수출 급증</a>' in html
+
+
+def test_plain_brackets_are_not_treated_as_links():
+    """링크가 아닌 대괄호 문구를 링크로 오인하면 안 된다."""
+    html = tg_format.to_telegram_html("배열 arr[0] 과 [주의] 문구")
+    assert "<a href" not in html
+
+
+def test_to_plain_strips_markdown_bold():
+    """2026-08-01 실물: 카카오 메시지에 '**📌 3protv오늘...**' 별표가 그대로 노출됐다."""
+    out = tg_format.to_plain("**📌 3protv오늘_20260731_MS호실적반도체급등 [한국 시황]**")
+    assert "**" not in out
+    assert "📌 3protv오늘_20260731_MS호실적반도체급등 [한국 시황]" in out
+
+
+def test_to_plain_strips_html_tags():
+    """ETF 리뷰는 처음부터 <b>/<i> HTML로 만들어진다 — 카카오에 태그가 그대로 보였다."""
+    md = "📦 <b>ETF 포트폴리오 리뷰</b>\n\n■ <b>TIME 미국나스닥100액티브</b> (426030)"
+    out = tg_format.to_plain(md)
+    assert "<b>" not in out and "</b>" not in out
+    assert "ETF 포트폴리오 리뷰" in out and "TIME 미국나스닥100액티브" in out
+
+
+def test_to_plain_converts_markdown_links():
+    out = tg_format.to_plain("🔗 [삼성전자 신고가](https://a.b/1)")
+    assert "[삼성전자 신고가](" not in out
+    assert "삼성전자 신고가 (https://a.b/1)" in out
+
+
+def test_to_plain_strips_headers():
+    out = tg_format.to_plain("## 요약\n내용")
+    assert "##" not in out and "요약" in out
+
+
+def test_to_plain_fold_body_is_also_cleaned():
+    """접기 안쪽에 마크다운/HTML이 있어도 재귀적으로 정리돼야 한다."""
+    inner = "**굵게** <b>태그</b> [링크](https://a.b/1)"
+    out = tg_format.to_plain(tg_format.fold("제목", inner))
+    assert "**" not in out and "<b>" not in out and "](http" not in out
+    assert "굵게" in out and "태그" in out and "링크 (https://a.b/1)" in out

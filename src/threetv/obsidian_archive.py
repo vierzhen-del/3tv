@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import glob as globmod
+import json
+import re
 import shutil
 import subprocess
 import time
@@ -150,36 +152,179 @@ def news_note_name(date: datetime) -> str:
     return f"3protv기사_{date.strftime('%Y%m%d')}"
 
 
-def obsidian_deeplink(obsidian_cfg: dict, date: datetime | None = None) -> str:
+def obsidian_deeplink(
+    obsidian_cfg: dict, date: datetime | None = None, file_prefix: str = "3protv오늘",
+) -> str:
     """탭S9/S26에서 탭하면 옵시디안이 열리는 딥링크.
+
+    ⚠️ **2026-08-02부터 호출부가 없다** — 탭S9에서 눌러도 옵시디안이 열리지 않아
+    `vault_location_link()`(저장위치 https 링크)로 대체했다. 다시 쓰려면 실기기에서
+    실제로 열리는지부터 확인할 것. 함수는 그때를 위해 남겨 둔다.
 
     파일명에는 그날 키워드가 붙어 전송 시점엔 확정되지 않으므로(us 세션이 만든
     파일을 kr이 재사용) **검색 딥링크**를 쓴다 — 날짜만으로 항상 맞는다.
+    `file_prefix`로 noon(`3protv정오`)·night(`3protv야간`) 노트도 같은 방식으로 연결한다.
     """
     vault = (obsidian_cfg or {}).get("vault_name", "").strip()
     if not vault:
         return ""
     ymd = (date or now_kst()).strftime("%Y%m%d")
     return (f"obsidian://search?vault={quote(vault)}"
-            f"&query={quote(f'3protv오늘_{ymd}')}")
+            f"&query={quote(f'{file_prefix}_{ymd}')}")
 
 
-def _frontmatter(date: datetime, keyword: str, indices: list[dict],
-                 holdings_mentioned: list[dict]) -> str:
-    mentioned = [h["name"] for h in holdings_mentioned if h.get("mentioned")]
-    idx_lines = "\n".join(
-        f'  - "{q["name"]}: {q["close"]} ({q["direction"]}{abs(q["change_pct"])}%)"'
-        for q in indices[:6]
-    )
-    return f"""---
-date: {date.strftime("%Y-%m-%d")}
-tags: [3protv, 시황]
-keyword: "{keyword}"
-holdings_mentioned: {mentioned if mentioned else "[]"}
-indices:
-{idx_lines if idx_lines else "  []"}
----
-"""
+def vault_location_url(obsidian_cfg: dict, rel: str) -> str:
+    """rel 파일의 https 링크만 (중계 repo, 어디서나 열림). repo 미설정/rel 없으면 빈 문자열.
+
+    카카오 「나에게 보내기」 클릭 링크처럼 마크다운이 아니라 URL 자체가 필요한
+    곳에서 vault_location_link와 계산을 공유하려고 분리했다.
+    """
+    if not rel:
+        return ""
+    repo = ((obsidian_cfg or {}).get("vault_repo") or "").strip()
+    if not repo:
+        return ""
+    branch = (obsidian_cfg or {}).get("vault_branch", "main")
+    # safe="/"가 없으면 경로 구분자까지 %2F로 인코딩돼 GitHub URL이 깨진다
+    return f"https://github.com/{repo}/blob/{branch}/{quote(rel, safe='/')}"
+
+
+def vault_location_link(obsidian_cfg: dict, rel: str) -> str:
+    """텔레그램 하단에 붙는 「저장위치」 한 줄.
+
+    obsidian:// 딥링크를 대체한다 — 탭S9에서 눌러도 옵시디안이 열리지 않았다
+    (2026-08-02 실측). 안드로이드가 커스텀 스킴을 앱으로 넘겨주지 못하면 링크가
+    죽은 채로 남으므로, **어디서나 열리는 https 링크**(중계 repo의 그 파일)로 바꾸고
+    링크 글자에는 볼트 안 실제 경로를 보여준다 — 딥링크가 안 열리는 기기에서도
+    "어디에 저장됐는지"는 눈으로 확인할 수 있다.
+
+    rel이 비어 있으면(저장 경로를 모르는 실패 경로) 빈 문자열을 돌려 줄을 생략한다.
+    """
+    if not rel:
+        return ""
+    cfg = obsidian_cfg or {}
+    vault = (cfg.get("vault_name") or "").strip()
+    shown = f"{vault}/{rel}" if vault else rel
+    url = vault_location_url(obsidian_cfg, rel)
+    if not url:
+        return f"🗂 저장위치: {shown}"
+    return f"🗂 저장위치: [{shown}]({url})"
+
+
+def _frontmatter(
+    date: datetime, session_tag: str, keyword: str = "",
+    indices: list[dict] | None = None, holdings_mentioned: list[dict] | None = None,
+) -> str:
+    """모든 노트 공통 frontmatter — 연도/월/세션 태그를 심어 옵시디안 검색·
+    Dataview에서 연관검색(같은 달/세션끼리 묶어보기)이 되게 한다."""
+    tags = ["3protv", session_tag, f"3protv/{date:%Y}", f"3protv/{date:%Y-%m}"]
+    lines = [
+        "---",
+        f'date: {date:%Y-%m-%d}',
+        f'year: {date:%Y}',
+        f'month: "{date:%Y-%m}"',
+        f'session: {session_tag}',
+        f'tags: [{", ".join(tags)}]',
+    ]
+    if keyword:
+        lines.append(f'keyword: "{keyword}"')
+    if holdings_mentioned is not None:
+        mentioned = [h["name"] for h in holdings_mentioned if h.get("mentioned")]
+        lines.append(f'holdings_mentioned: {mentioned if mentioned else "[]"}')
+    if indices is not None:
+        idx_lines = "\n".join(
+            f'  - "{q["name"]}: {q["close"]} ({q["direction"]}{abs(q["change_pct"])}%)"'
+            for q in indices[:6]
+        )
+        lines.append("indices:")
+        lines.append(idx_lines if idx_lines else "  []")
+    lines.append("---\n")
+    return "\n".join(lines)
+
+
+_DAY_LABELS = {
+    "3protv오늘": "일일시황",
+    "3protv기사": "종목기사",
+    "3protv정오": "정오시황",
+    "3protv야간": "야간미장",
+}
+_WEEKDAY_KO = "월화수목금토일"
+RELATED_MARKER = "<!-- 3tv:related -->"
+
+
+def _relink_day(month_dir: Path, ymd: str) -> list[Path]:
+    """같은 날짜(ymd)의 노트끼리 하단에 '관련 노트' 위키링크를 채워 넣는다.
+
+    옵시디안 백링크/그래프뷰로 그날 시황·기사·정오·야간 노트가 서로 연결돼
+    보이게 하는 것이 목적 — 파일명이 매번 키워드로 달라져 자동 백링크만으론
+    안 잡히므로 명시적으로 링크한다. 새 노트가 추가될 때마다 그날 전체 노트를
+    다시 훑어 재작성하므로 순서와 무관하게 항상 최신 상태를 유지한다.
+    """
+    files = sorted(f for f in month_dir.glob(f"*{ymd}*.md") if f.name != "_index.md")
+    changed = []
+    for f in files:
+        siblings = [g for g in files if g != f]
+        content = f.read_text(encoding="utf-8")
+        body = content.split(RELATED_MARKER, 1)[0].rstrip()
+        if siblings:
+            links = " · ".join(f"[[{g.stem}]]" for g in siblings)
+            block = f"\n\n{RELATED_MARKER}\n---\n🔗 같은 날 다른 3tv 리포트: {links}\n"
+        else:
+            block = f"\n\n{RELATED_MARKER}\n"
+        new_content = body + block
+        if new_content != content:
+            f.write_text(new_content, encoding="utf-8")
+            changed.append(f)
+    return changed
+
+
+def _rebuild_month_index(vault: Path, base_path: str, date: datetime) -> Path:
+    """월별 인덱스(MOC) 노트 재생성 — 연도/월/일자 단위 검색·요약 참조용.
+
+    호출될 때마다 그 달 폴더를 훑어 처음부터 다시 쓰므로(멱등) 순서·중복
+    걱정 없이 항상 그 시점의 실제 파일 구성을 반영한다.
+    """
+    month_dir = vault / base_path / date.strftime("%Y") / date.strftime("%m")
+    month_dir.mkdir(parents=True, exist_ok=True)
+    by_day: dict[str, list[tuple[str, str]]] = {}
+    for f in sorted(month_dir.glob("*.md")):
+        if f.name == "_index.md":
+            continue
+        m = re.search(r"_(\d{8})", f.stem)
+        if not m:
+            continue
+        ymd = m.group(1)
+        prefix = f.stem.split("_")[0]
+        label = _DAY_LABELS.get(prefix, prefix)
+        by_day.setdefault(ymd, []).append((label, f.stem))
+    lines = [
+        "---",
+        f'tags: [3protv, index, "3protv/{date:%Y}", "3protv/{date:%Y-%m}"]',
+        "---",
+        f"# {date:%Y}년 {date:%m}월 3protv 인덱스",
+        "",
+        "일자별 시황 리포트 모음 — 검색/Dataview 참조용.",
+        "",
+    ]
+    for ymd in sorted(by_day):
+        d = datetime.strptime(ymd, "%Y%m%d")
+        items = " · ".join(
+            f"[[{stem}|{label}]]" for label, stem in sorted(by_day[ymd])
+        )
+        lines.append(f"- **{d:%Y-%m-%d} ({_WEEKDAY_KO[d.weekday()]})**: {items}")
+    path = month_dir / "_index.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _index_and_relink(vault: Path, base_path: str, month_dir: Path, date: datetime,
+                      ymd: str, already: set[Path]) -> list[Path]:
+    """`_relink_day` + `_rebuild_month_index`를 함께 실행하고, git add에 추가할
+    새 변경 파일 목록(이미 add 예정인 파일 제외)을 돌려준다."""
+    changed = _relink_day(month_dir, ymd)
+    index_path = _rebuild_month_index(vault, base_path, date)
+    extra = {p for p in changed} | {index_path}
+    return [p for p in extra if p not in already]
 
 
 def read_us_section_today(obsidian_cfg: dict) -> tuple[str, str]:
@@ -206,6 +351,58 @@ def read_us_section_today(obsidian_cfg: dict) -> tuple[str, str]:
         if US_MARKER in content:
             return content.split(US_MARKER, 1)[1].split(KR_MARKER, 1)[0], ""
         return content, ""
+    finally:
+        shutil.rmtree(VAULT_TMP, ignore_errors=True)
+
+
+def archive_simple_report(
+    obsidian_cfg: dict, file_prefix: str, keyword: str, markdown_report: str,
+) -> ArchiveResult:
+    """noon/night처럼 **하루 1회만** 발행되는 단일 세션 리포트를 저장한다.
+
+    us/kr의 `archive_report()`는 같은 날짜 파일에 US_MARKER/KR_MARKER로 두 세션을
+    병합하는 구조라 세션이 늘어나면 안 맞는다. noon/night은 병합 상대가 없으므로
+    그날 새 파일 하나를 통째로 쓰는 훨씬 단순한 경로를 쓴다.
+    """
+    vault, reason = _clone_vault(obsidian_cfg)
+    if not vault:
+        return ArchiveResult(ok=False, skipped=reason == DISABLED, reason=reason)
+    try:
+        date = now_kst()
+        ymd = date.strftime("%Y%m%d")
+        month_dir = vault / obsidian_cfg["base_path"] / date.strftime("%Y") / date.strftime("%m")
+        month_dir.mkdir(parents=True, exist_ok=True)
+        safe_kw = "".join(c for c in keyword if c.isalnum() or c in "가-힣_-")[:20]
+        path = month_dir / f"{file_prefix}_{ymd}_{safe_kw or '리포트'}.md"
+        session_tag = _DAY_LABELS.get(file_prefix, file_prefix)
+        front = _frontmatter(date, session_tag, keyword=keyword)
+        path.write_text(f"{front}# {path.stem}\n\n{markdown_report}\n", encoding="utf-8")
+
+        rel = path.relative_to(vault)
+        extra = _index_and_relink(vault, obsidian_cfg["base_path"], month_dir, date, ymd, {path})
+        to_add = [str(rel)] + [str(p.relative_to(vault)) for p in extra]
+        subprocess.run(["git", "-C", str(vault), "add", *to_add],
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "-C", str(vault),
+             "-c", "user.name=3tv-bot", "-c", "user.email=3tv-bot@users.noreply.github.com",
+             "commit", "-m", f"{file_prefix} 리포트 {date:%Y-%m-%d}"],
+            capture_output=True, text=True,
+        )
+        if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+            return ArchiveResult(False, False,
+                                 f"커밋 실패: {commit.stderr.strip()[-200:]}", str(rel))
+        branch = obsidian_cfg.get("vault_branch", "main")
+        push = subprocess.run(["git", "-C", str(vault), "push", "-u", "origin", branch],
+                              capture_output=True, text=True, timeout=120)
+        if push.returncode != 0:
+            return ArchiveResult(False, False,
+                                 f"push 실패: {push.stderr.strip()[-200:]}", str(rel))
+        log.info("옵시디안 볼트 저장 완료: %s", rel)
+        return ArchiveResult(True, False, "", str(rel))
+    except Exception as e:
+        log.error("옵시디안 아카이브 오류(무시하고 계속): %s", e)
+        return ArchiveResult(False, False, f"아카이브 오류: {e}")
     finally:
         shutil.rmtree(VAULT_TMP, ignore_errors=True)
 
@@ -243,7 +440,7 @@ def archive_report(
             head = US_NEWS_HEAD if session == "us" else KR_NEWS_HEAD
             other = KR_NEWS_HEAD if session == "us" else US_NEWS_HEAD
             prev = news_path.read_text(encoding="utf-8") if news_path.exists() \
-                else f"# {news_note_name(date)}\n"
+                else _frontmatter(date, "종목기사") + f"# {news_note_name(date)}\n"
             if head in prev:
                 # 같은 세션 재실행 → 내 섹션만 걷어내고 다른 세션 섹션은 보존
                 before, rest = prev.split(head, 1)
@@ -267,14 +464,19 @@ def archive_report(
                 content += section
         else:
             title = f"# {path.stem}\n"
-            content = _frontmatter(date, keyword, indices, holdings_mentioned) + title + section
+            content = _frontmatter(date, "일일시황", keyword=keyword, indices=indices,
+                                   holdings_mentioned=holdings_mentioned) + title + section
 
         path.write_text(content, encoding="utf-8")
 
         rel = path.relative_to(vault)
+        ymd = date.strftime("%Y%m%d")
+        already = {path} | ({news_path} if news_path is not None else set())
+        extra = _index_and_relink(vault, obsidian_cfg["base_path"], path.parent, date, ymd, already)
         to_add = [str(rel)]
         if news_path is not None:
             to_add.append(str(news_path.relative_to(vault)))
+        to_add += [str(p.relative_to(vault)) for p in extra]
         subprocess.run(["git", "-C", str(vault), "add", *to_add],
                        check=True, capture_output=True)
         commit = subprocess.run(
@@ -301,5 +503,82 @@ def archive_report(
     except Exception as e:
         log.error("옵시디안 아카이브 오류(무시하고 계속): %s", e)
         return ArchiveResult(False, False, f"아카이브 오류: {e}")
+    finally:
+        shutil.rmtree(VAULT_TMP, ignore_errors=True)
+
+
+# ─────────────────── night 세션: 슬롯 캡처 → 06시 종합 ───────────────────
+#
+# GitHub Actions 단일 job은 최대 6시간이라 22:00~06:00(8h) 연속 녹화가 불가능하다.
+# 매시 정각 5분만 캡처하는 슬롯 job 8개가 각자 독립 실행되므로, 로컬 파일로는
+# 서로의 결과를 못 본다 — us→kr이 쓰는 것과 같은 볼트 repo를 슬롯 간 전달 통로로
+# 재사용한다(3protv/ 폴더와 안 겹치게 _night_slots/ 아래에 저장).
+
+NIGHT_SLOT_DIR = "_night_slots"
+
+
+def save_night_slot(
+    obsidian_cfg: dict, date_ymd: str, hour_label: str, payload: dict
+) -> ArchiveResult:
+    """슬롯 1회분(vision_results 등)을 볼트에 저장 — 06시 종합이 나중에 모아 읽는다."""
+    vault, reason = _clone_vault(obsidian_cfg)
+    if not vault:
+        return ArchiveResult(ok=False, skipped=reason == DISABLED, reason=reason)
+    try:
+        slot_dir = vault / NIGHT_SLOT_DIR / date_ymd
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        path = slot_dir / f"{hour_label}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        rel = path.relative_to(vault)
+        subprocess.run(["git", "-C", str(vault), "add", str(rel)],
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "-C", str(vault),
+             "-c", "user.name=3tv-bot", "-c", "user.email=3tv-bot@users.noreply.github.com",
+             "commit", "-m", f"night slot {hour_label} {date_ymd}"],
+            capture_output=True, text=True,
+        )
+        if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+            return ArchiveResult(False, False,
+                                 f"슬롯 커밋 실패: {commit.stderr.strip()[-200:]}", str(rel))
+        branch = obsidian_cfg.get("vault_branch", "main")
+        push = subprocess.run(["git", "-C", str(vault), "push", "-u", "origin", branch],
+                              capture_output=True, text=True, timeout=120)
+        if push.returncode != 0:
+            return ArchiveResult(False, False,
+                                 f"슬롯 push 실패: {push.stderr.strip()[-200:]}", str(rel))
+        log.info("야간 슬롯 저장 완료: %s", rel)
+        return ArchiveResult(True, False, "", str(rel))
+    except Exception as e:
+        log.error("야간 슬롯 저장 오류(무시하고 계속): %s", e)
+        return ArchiveResult(False, False, f"슬롯 저장 오류: {e}")
+    finally:
+        shutil.rmtree(VAULT_TMP, ignore_errors=True)
+
+
+def read_night_slots(obsidian_cfg: dict, date_ymd: str) -> tuple[list[dict], str]:
+    """오늘 저장된 슬롯 전체를 시각순으로 읽는다 → (슬롯 목록, 실패사유).
+
+    슬롯 job이 죽거나 늦어 일부만 있어도 있는 만큼으로 종합을 진행한다 —
+    개별 슬롯 실패로 06시 종합 전체가 무산되면 안 된다.
+    """
+    vault, reason = _clone_vault(obsidian_cfg)
+    if not vault:
+        return [], reason
+    try:
+        slot_dir = vault / NIGHT_SLOT_DIR / date_ymd
+        files = sorted(slot_dir.glob("*.json")) if slot_dir.exists() else []
+        if not files:
+            return [], f"{date_ymd} 야간 슬롯이 볼트에 하나도 없음 (전체 슬롯 job 실패 추정)"
+        slots = []
+        for f in files:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                data["hour_label"] = f.stem
+                slots.append(data)
+            except Exception as e:
+                log.warning("슬롯 파일 파싱 실패(건너뜀) %s: %s", f, e)
+        return slots, ""
     finally:
         shutil.rmtree(VAULT_TMP, ignore_errors=True)

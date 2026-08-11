@@ -1,0 +1,104 @@
+# ETF 포트폴리오 리뷰: KRX 공시 납입자산구성내역(PDF)의 전일 대비 구성 변화.
+# 방송 캡처와 무관한 순수 데이터 리포트라 kr-session(37분)에 얹지 않고 독립 실행한다 —
+# kr이 캡처 단계에서 실패해도 이 리포트는 정상 발행된다. LLM 미사용(Gemini 0건).
+# cron은 KST 09:30 = UTC 00:30 월~금 (장 개장 후 PDF 공시가 확정된 시점).
+name: etf-review
+
+on:
+  schedule:
+    - cron: "30 0 * * 1-5"    # KST 09:30
+  workflow_dispatch:
+    inputs:
+      notify:
+        description: "false면 텔레그램/카카오 전송 생략 (기본 전송)"
+        required: false
+        default: "true"
+      archive:
+        description: "false면 볼트 저장 생략 (기본 저장)"
+        required: false
+        default: "true"
+      probe_flows:
+        description: "true면 수급·ETF명 진단 출력 (리포트 발송과 무관)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15      # KRX 조회 4종뿐 — 캡처·비전·전사 없음
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline (etf review)
+        env:
+          PYTHONPATH: src
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: |
+          FLAGS="--session etf"
+          if [ "${{ github.event.inputs.notify }}" = "false" ]; then
+            FLAGS="$FLAGS --skip-notify"
+          fi
+          if [ "${{ github.event.inputs.archive }}" = "false" ]; then
+            FLAGS="$FLAGS --skip-archive"
+          fi
+          python -m threetv.main $FLAGS
+
+      # 수급이 하루치로 나오는지(10일 누적 버그 재발 방지) + ETF 종목명이 코드로
+      # 남지 않는지 실제 KRX로 확인한다. 발송 경로와 무관한 순수 진단.
+      - name: Probe flows / ETF names (debug)
+        if: github.event.inputs.probe_flows == 'true'
+        env:
+          PYTHONPATH: src
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: |
+          python - <<'PY'
+          from threetv import market
+          print("최근 영업일:", market.last_biz_days(2))
+          m = market._etf_name_map()
+          print("ETF 종목명 맵:", len(m), "건")
+          mv = market.kr_etf_top_movers(n=5)
+          for side in ("up", "down"):
+              print(f"-- ETF {side}")
+              for r in mv.get(side) or []:
+                  flag = "CODE!" if r["name"] == r["ticker"] else "ok"
+                  print(f"   [{flag}] {r['ticker']} {r['name']} {r['pct']:+.2f}%")
+          s = market.kr_flow_summary()
+          print("-- 수급 요약", s.get("date"), "vs", s.get("prev_date"))
+          for r in s.get("main") or []:
+              print(f"   {r['investor']}: {r['net']:+,.0f} (전일比 {r['delta']})")
+          PY
+
+      - name: Print report (debug)
+        if: always()
+        run: |
+          for f in $(find output -name report.md 2>/dev/null); do
+            echo "===== $f ====="
+            head -c 6000 "$f"
+            echo
+          done
+
+      - name: Upload analysis artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etf-review-${{ github.run_id }}
+          path: |
+            output/**/report.json
+            output/**/report.md
+          if-no-files-found: ignore
+          retention-days: 7
