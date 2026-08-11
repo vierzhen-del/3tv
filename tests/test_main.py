@@ -299,6 +299,22 @@ def test_vault_location_link_empty_when_path_unknown():
     assert vault_location_link(OBS_CFG, "") == ""
 
 
+def test_vault_location_url_matches_link_target():
+    """카카오 클릭 링크용 — vault_location_link 안의 URL과 값이 같아야 한다."""
+    from threetv.obsidian_archive import vault_location_link, vault_location_url
+    url = vault_location_url(OBS_CFG, REL)
+    assert url.startswith("https://github.com/vierzhen-del/3tv-reports/blob/main/3protv/2026/08/")
+    assert "%2F" not in url
+    # vault_location_link의 마크다운 링크 안에 박힌 URL과 동일해야 한다
+    assert f"]({url})" in vault_location_link(OBS_CFG, REL)
+
+
+def test_vault_location_url_empty_without_repo_or_rel():
+    from threetv.obsidian_archive import vault_location_url
+    assert vault_location_url({"vault_name": "vierzhen_home"}, REL) == ""
+    assert vault_location_url(OBS_CFG, "") == ""
+
+
 def test_report_footer_has_location_and_generated_time():
     from threetv.obsidian_archive import ArchiveResult
     footer = main_mod.report_footer({"obsidian": OBS_CFG},

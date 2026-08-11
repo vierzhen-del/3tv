@@ -148,6 +148,22 @@ def obsidian_deeplink(
             f"&query={quote(f'{file_prefix}_{ymd}')}")
 
 
+def vault_location_url(obsidian_cfg: dict, rel: str) -> str:
+    """rel 파일의 https 링크만 (중계 repo, 어디서나 열림). repo 미설정/rel 없으면 빈 문자열.
+
+    카카오 「나에게 보내기」 클릭 링크처럼 마크다운이 아니라 URL 자체가 필요한
+    곳에서 vault_location_link와 계산을 공유하려고 분리했다.
+    """
+    if not rel:
+        return ""
+    repo = ((obsidian_cfg or {}).get("vault_repo") or "").strip()
+    if not repo:
+        return ""
+    branch = (obsidian_cfg or {}).get("vault_branch", "main")
+    # safe="/"가 없으면 경로 구분자까지 %2F로 인코딩돼 GitHub URL이 깨진다
+    return f"https://github.com/{repo}/blob/{branch}/{quote(rel, safe='/')}"
+
+
 def vault_location_link(obsidian_cfg: dict, rel: str) -> str:
     """텔레그램 하단에 붙는 「저장위치」 한 줄.
 
@@ -164,12 +180,9 @@ def vault_location_link(obsidian_cfg: dict, rel: str) -> str:
     cfg = obsidian_cfg or {}
     vault = (cfg.get("vault_name") or "").strip()
     shown = f"{vault}/{rel}" if vault else rel
-    repo = (cfg.get("vault_repo") or "").strip()
-    if not repo:
+    url = vault_location_url(obsidian_cfg, rel)
+    if not url:
         return f"🗂 저장위치: {shown}"
-    branch = cfg.get("vault_branch", "main")
-    # safe="/"가 없으면 경로 구분자까지 %2F로 인코딩돼 GitHub URL이 깨진다
-    url = f"https://github.com/{repo}/blob/{branch}/{quote(rel, safe='/')}"
     return f"🗂 저장위치: [{shown}]({url})"
 
 
