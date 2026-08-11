@@ -1,0 +1,152 @@
+{
+  "name": "3tv 리포트 → RaeVault 일회성 백필 (2026-07~08)",
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "manual",
+      "name": "수동 실행",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "months",
+      "name": "대상 월 목록",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 0],
+      "parameters": {
+        "jsCode": "// 일회성 백필이라 하드코딩 — 3tv-reports에 실제 존재하는 월만 나열\n// (2026-08-11 기준 3protv/2026/07, 3protv/2026/08)\nreturn [\n  { json: { yyyy: \"2026\", mm: \"07\" } },\n  { json: { yyyy: \"2026\", mm: \"08\" } }\n];"
+      }
+    },
+    {
+      "id": "listfiles",
+      "name": "월별 파일 목록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [420, 0],
+      "parameters": {
+        "url": "={{ 'https://api.github.com/repos/vierzhen-del/3tv-reports/contents/3protv/' + $json.yyyy + '/' + $json.mm + '?ref=main' }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-backfill"
+            }
+          ]
+        }
+      },
+      "alwaysOutputData": true,
+      "notesInFlow": true,
+      "notes": "<N8N_GITHUB_PAT> 자리는 새로 값을 입력하지 말고, 기존 'n8n_3tv_sync_workflow.json'의 '파일 목록 조회' 노드에 이미 설정된 Authorization 헤더 값(또는 연결된 Credential)을 그대로 복사해 붙일 것 — 토큰을 다시 타이핑/채팅에 노출할 필요 없음."
+    },
+    {
+      "id": "buildtargets",
+      "name": "target 계산",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 0],
+      "parameters": {
+        "jsCode": "// 입력: 월별 파일 목록 응답들 (아이템마다 하나의 월 응답 배열이 json으로 옴)\n// httpRequest가 배열 응답을 아이템별로 펼쳐주므로, 여기서는 파일 하나=아이템 하나로 가정하고\n// yyyy/mm은 상위 '대상 월 목록' 아이템과 페어링된 실행 인덱스로 복원한다.\nconst out = [];\nfor (const item of $input.all()) {\n  const f = item.json;\n  if (!f.name || !f.name.endsWith('.md')) continue; // 404 응답({message:\"Not Found\"}) 등 걸러짐\n  // download_url에서 yyyy/mm 역산 (…/3protv/2026/08/파일명 형태)\n  const m = decodeURIComponent(f.path || '').match(/3protv\\/(\\d{4})\\/(\\d{2})\\//);\n  if (!m) continue;\n  const [, yyyy, mm] = m;\n  out.push({ json: {\n    name: f.name,\n    download_url: f.download_url,\n    target: `/root/obsidian/3protv/${yyyy}/${mm}/${f.name}`\n  }});\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "mkdirp",
+      "name": "저장 폴더 생성",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [860, 0],
+      "parameters": {
+        "command": "=mkdir -p \"$(dirname \"{{ $json.target }}\")\""
+      },
+      "notesInFlow": true,
+      "notes": "일별 동기화 워크플로와 같은 이유로 '다운로드' 이전에 배치 — Execute Command는 입력 binary를 보존하지 않는다."
+    },
+    {
+      "id": "download",
+      "name": "다운로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 0],
+      "parameters": {
+        "url": "={{ $('target 계산').item.json.download_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT>"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-backfill"
+            }
+          ]
+        }
+      },
+      "notesInFlow": true,
+      "notes": "같은 <N8N_GITHUB_PAT> — 기존 워크플로 설정값 복사"
+    },
+    {
+      "id": "writefile",
+      "name": "RaeVault에 저장",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [1260, 0],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('target 계산').item.json.target }}",
+        "dataPropertyName": "data"
+      },
+      "notesInFlow": true,
+      "notes": "이미 있는 파일도 같은 내용으로 덮어쓸 뿐이라 중복 실행은 무해함 — no-clobber 로직 불필요."
+    }
+  ],
+  "connections": {
+    "수동 실행": {
+      "main": [[{ "node": "대상 월 목록", "type": "main", "index": 0 }]]
+    },
+    "대상 월 목록": {
+      "main": [[{ "node": "월별 파일 목록", "type": "main", "index": 0 }]]
+    },
+    "월별 파일 목록": {
+      "main": [[{ "node": "target 계산", "type": "main", "index": 0 }]]
+    },
+    "target 계산": {
+      "main": [[{ "node": "저장 폴더 생성", "type": "main", "index": 0 }]]
+    },
+    "저장 폴더 생성": {
+      "main": [[{ "node": "다운로드", "type": "main", "index": 0 }]]
+    },
+    "다운로드": {
+      "main": [[{ "node": "RaeVault에 저장", "type": "main", "index": 0 }]]
+    }
+  }
+}
