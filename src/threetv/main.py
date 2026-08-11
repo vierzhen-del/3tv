@@ -315,11 +315,25 @@ def _vault_alert(label: str, reason: str, us_context_problem: str = "") -> str:
     ]
     if us_context_problem:
         lines.append(f"· kr 리포트가 미장 컨텍스트 없이 생성됨: {us_context_problem}")
-    lines += [
-        "",
-        "조치: GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인",
-    ]
+    lines += ["", f"조치: {_remediation(reason)}"]
     return "\n".join(lines)
+
+
+def _remediation(reason: str) -> str:
+    """사유별로 다른 조치 — 전부 "GH_PAT 재발급"으로 뭉치면 SSL 같은 무관한
+    원인에도 잘못된 안내가 나간다(2026-08-12 실측: 인증서 검증 실패인데
+    재발급 안내가 나갔던 사고).
+
+    ⚠️ SSL/타임아웃 케이스를 먼저 체크할 것 — 그 설명 문구 자체에 "GH_PAT과 무관"처럼
+    "GH_PAT"이라는 글자가 들어가서, 순서를 바꾸면 부분 문자열 매칭에 걸려 다시
+    잘못 분류된다(이 함수를 고치다가 실제로 한 번 겪은 버그)."""
+    if "SSL" in reason or "인증서" in reason:
+        return "조치 불필요할 가능성 높음(러너 일시 장애, 자동 재시도 적용됨) — 반복되면 https://www.githubstatus.com 확인"
+    if "타임아웃" in reason or "네트워크" in reason:
+        return "일시적 네트워크 문제로 보임 — 다음 세션에서 자동 재시도됨, 반복되면 확인 필요"
+    if "GH_PAT" in reason or "인증 실패" in reason:
+        return "GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인"
+    return "3tv Actions의 vault-check 워크플로 수동 실행으로 원인 확인"
 
 
 def main() -> int:
