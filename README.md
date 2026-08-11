@@ -90,7 +90,7 @@ capture (yt-dlp+ffmpeg 라이브 녹화, 480p)
 | `GEMINI_API_KEY` | ✅ | https://aistudio.google.com 에서 발급 (프레임 분석) |
 | `ANTHROPIC_API_KEY` | ✅ | https://console.anthropic.com 에서 발급 (리포트 생성) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | 기존 3protv 알림봇 토큰 재사용 가능 |
-| `TELEGRAM_CHAT_ID` | ✅ | 수신자/채널 chat id |
+| `TELEGRAM_CHAT_ID` | ✅ | 수신자/채널 chat id — 콤마로 여러 개 나열하면 각 방에 동시 발송 (설정법: [텔레그램 다중 발송 가이드](docs/telegram_multi_chat.md)) |
 | `YOUTUBE_COOKIES` | 권장 | 유튜브 봇차단 대응 (아래 참고) |
 | `KRX_ID` / `KRX_PW` | 권장 | data.krx.co.kr 회원 계정 — pykrx 인증 요청용. 미설정 시 익명 요청으로 폴백되어 **국내 종목(삼성전자·SK하이닉스) 시세가 비는 경우가 많음** |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 권장 | 네이버 검색 API (무료 **하루 25,000건**) — 종목별 관련 기사 링크 + 📰 뉴스 브리핑. 미설정 시 검색 링크만 제공 (아래 참고) |
