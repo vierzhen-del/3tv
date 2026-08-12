@@ -195,6 +195,65 @@ def kr_resolve(name_or_code: str) -> str | None:
     return _krx_name_map().get(s)
 
 
+@functools.lru_cache(maxsize=1)
+def _krx_index_map() -> dict[str, str]:
+    """KRX 지수명 → 지수 티커 매핑 (KOSPI/KOSDAQ/KRX/테마 전체).
+
+    지수 티커는 KRX 내부 부여 번호라 공식 문서가 없고 개편되면 바뀔 수 있어
+    `_krx_name_map()`과 마찬가지로 **하드코딩하지 않고** 매번 이름으로 찾는다.
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return {}
+
+    date = datetime.now(KST).strftime("%Y%m%d")
+    mapping: dict[str, str] = {}
+    try:
+        for mkt in ("KOSPI", "KOSDAQ", "KRX", "테마"):
+            for code in stock.get_index_ticker_list(date, market=mkt):
+                name = stock.get_index_ticker_name(code)
+                if name:
+                    mapping[name] = code
+    except Exception as e:
+        log.warning("KRX 지수 리스트 로딩 실패: %s", e)
+    return mapping
+
+
+def kr_index_quote(name_parts: tuple[str, ...], display_name: str) -> dict | None:
+    """지수명에 `name_parts`를 모두 포함하는 KRX 지수의 최근 종가·등락률.
+
+    VKOSPI(코스피 변동성지수) 조회용 — report.py의 프롬프트가 요구하는데도
+    이전엔 어디서도 조회하지 않아 리포트에 항상 "확인 불가"로 찍혔다
+    (2026-08-12 실측). 종목과 달리 지수는 6자리 코드가 아니라 KRX 내부 번호라
+    `_krx_index_map()`으로 이름 매칭해 찾는다.
+    """
+    stock = _pykrx_stock()
+    if stock is None:
+        return None
+    mapping = _krx_index_map()
+    code = next((c for n, c in mapping.items() if all(p in n for p in name_parts)), None)
+    if not code:
+        log.debug("KRX 지수 '%s' 를 찾지 못함", " ".join(name_parts))
+        return None
+    try:
+        end = datetime.now(KST)
+        start = end - timedelta(days=10)
+        df = stock.get_index_ohlcv_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
+        )
+        if len(df) < 2:
+            return None
+        pair = _pair_from_closes(df["종가"])
+        if pair is None:
+            return None
+        close, prev, asof = pair
+        return _fmt_quote(display_name, code, "KR", close,
+                          (close - prev) / prev * 100, asof, prev)
+    except Exception as e:
+        log.debug("KRX 지수 조회 실패 %s(%s): %s", " ".join(name_parts), code, e)
+        return None
+
+
 def kr_quote(name_or_code: str, name: str | None = None) -> dict | None:
     """한국 종목의 최근 종가(장전이면 전일 종가)와 등락률."""
     stock = _pykrx_stock()
@@ -230,9 +289,18 @@ def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
     설정 순서(방송 슬라이드 순서)를 그대로 유지해 리포트에서 화면과 대조하기 쉽게 한다.
     """
     quotes = us_quotes_batch(indices_cfg)
+
+    # VKOSPI(코스피 변동성지수)는 yfinance에 티커가 없어 위 배치 조회로 못 받는다 —
+    # pykrx 지수 API로 따로 조회해 합친다 (없으면 종전처럼 리포트에서 "확인 불가").
+    vkospi = kr_index_quote(("코스피", "변동성"), "VKOSPI (코스피 변동성지수)")
+    if vkospi:
+        quotes.append(vkospi)
+    else:
+        log.warning("VKOSPI 조회 실패 — 리포트에서 제외")
+
     order = {t: i for i, t in enumerate(indices_cfg)}
     quotes.sort(key=lambda q: order.get(q["ticker"], 999))
-    log.info("주요 지표 조회: %d/%d건 성공", len(quotes), len(indices_cfg))
+    log.info("주요 지표 조회: %d/%d건 성공", len(quotes), len(indices_cfg) + 1)
 
     # 기준일이 섞여 있으면 섹션 제목의 단일 기준일 표기가 오해를 부른다.
     # 대표 기준일보다 오래된 항목엔 stale 플래그를 달아, 리포트가 그 항목만

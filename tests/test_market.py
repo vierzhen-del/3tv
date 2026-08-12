@@ -91,6 +91,7 @@ def test_batch_parses_multiindex_and_keeps_config_order(monkeypatch):
         "^DJI": [44000.0, 44120.0],
     })
     monkeypatch.setattr(market, "us_quote", lambda *a, **k: None)
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
     import yfinance as yf
     monkeypatch.setattr(yf, "download", lambda *a, **k: df)
 
@@ -107,6 +108,7 @@ def test_batch_excludes_all_nan_ticker(monkeypatch):
         "BADSYM": [np.nan, np.nan],
     })
     monkeypatch.setattr(market, "us_quote", lambda *a, **k: None)
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
     import yfinance as yf
     monkeypatch.setattr(yf, "download", lambda *a, **k: df)
 
@@ -124,6 +126,7 @@ def test_batch_failure_falls_back_to_individual(monkeypatch):
         market, "us_quote",
         lambda t, n=None: market._fmt_quote(n or t, t, "US", 100.0, 1.0, "2026-07-24", 99.0),
     )
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
     quotes = market.fetch_indices({"^IXIC": "나스닥"})
     assert len(quotes) == 1 and quotes[0]["close"] == 100.0
 
@@ -132,6 +135,7 @@ def test_batch_handles_single_ticker_flat_columns(monkeypatch):
     """티커 1개일 때 yfinance는 평면 컬럼을 준다."""
     df = pd.DataFrame({"Close": [99.0, 101.0]}, index=_idx(2))
     monkeypatch.setattr(market, "us_quote", lambda *a, **k: None)
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
     import yfinance as yf
     monkeypatch.setattr(yf, "download", lambda *a, **k: df)
 
@@ -182,6 +186,84 @@ def test_verify_mentions_survives_pykrx_failure(monkeypatch):
     assert len(got) == 2
     assert got[0]["quote"] is None          # 국내는 비고
     assert got[1]["quote"]["close"] == 100.0  # 미국은 정상
+
+
+# ─────────────────── VKOSPI(지수) 조회 ───────────────────
+# 2026-08-12 실측: report.py 프롬프트는 VKOSPI를 요구했지만 어디서도 조회하지
+# 않아 리포트에 항상 "확인 불가"로 찍혔다. 종목(6자리 코드)과 달리 지수는 KRX
+# 내부 번호라 이름으로 찾아야 하므로 kr_quote/_krx_name_map과는 별도 경로다.
+
+class _FakeIndexStock:
+    """get_index_* 3종만 흉내내는 최소 pykrx.stock 더블."""
+
+    def __init__(self, name_by_code: dict[str, str], closes: dict[str, list[float]]):
+        self._names = name_by_code
+        self._closes = closes
+
+    def get_index_ticker_list(self, date, market="KOSPI"):
+        return list(self._names)
+
+    def get_index_ticker_name(self, ticker):
+        return self._names.get(ticker, "")
+
+    def get_index_ohlcv_by_date(self, fromdate, todate, ticker, freq="d", name_display=True):
+        vals = self._closes.get(ticker, [])
+        return pd.DataFrame({"종가": vals}, index=_idx(len(vals)))
+
+
+def test_kr_index_quote_finds_by_partial_name_match(monkeypatch):
+    fake = _FakeIndexStock(
+        {"1001": "코스피", "1028": "코스피 200 변동성지수"},
+        {"1028": [28.5, 25.1]},
+    )
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: fake)
+    market._krx_index_map.cache_clear()
+    try:
+        q = market.kr_index_quote(("코스피", "변동성"), "VKOSPI (코스피 변동성지수)")
+        assert q is not None
+        assert q["ticker"] == "1028" and q["market"] == "KR"
+        assert q["name"] == "VKOSPI (코스피 변동성지수)"
+        assert q["close"] == 25.1 and q["prev_close"] == 28.5
+    finally:
+        market._krx_index_map.cache_clear()
+
+
+def test_kr_index_quote_returns_none_when_no_match(monkeypatch):
+    fake = _FakeIndexStock({"1001": "코스피"}, {})
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: fake)
+    market._krx_index_map.cache_clear()
+    try:
+        assert market.kr_index_quote(("코스피", "변동성"), "VKOSPI") is None
+    finally:
+        market._krx_index_map.cache_clear()
+
+
+def test_kr_index_quote_returns_none_when_pykrx_unavailable(monkeypatch):
+    monkeypatch.setattr(market, "_pykrx_stock", lambda: None)
+    assert market.kr_index_quote(("코스피", "변동성"), "VKOSPI") is None
+
+
+def test_fetch_indices_appends_vkospi_when_available(monkeypatch):
+    monkeypatch.setattr(market, "us_quotes_batch", lambda cfg: [
+        market._fmt_quote("나스닥", "^IXIC", "US", 100.0, 1.0, "2026-08-11", 99.0),
+    ])
+    monkeypatch.setattr(
+        market, "kr_index_quote",
+        lambda *a, **k: market._fmt_quote(
+            "VKOSPI (코스피 변동성지수)", "1028", "KR", 25.1, -12.0, "2026-08-11", 28.5),
+    )
+    quotes = market.fetch_indices({"^IXIC": "나스닥"})
+    assert [q["ticker"] for q in quotes] == ["^IXIC", "1028"]  # 슬라이드 순서 밖 → 맨 뒤
+
+
+def test_fetch_indices_survives_vkospi_lookup_failure(monkeypatch):
+    """VKOSPI 조회가 실패해도 나머지 지표는 그대로 나가야 한다(숫자 창작 금지, 파이프라인 유지)."""
+    monkeypatch.setattr(market, "us_quotes_batch", lambda cfg: [
+        market._fmt_quote("나스닥", "^IXIC", "US", 100.0, 1.0, "2026-08-11", 99.0),
+    ])
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
+    quotes = market.fetch_indices({"^IXIC": "나스닥"})
+    assert [q["ticker"] for q in quotes] == ["^IXIC"]
 
 
 # ───────────────────── 관련 기사 링크 ─────────────────────
@@ -260,6 +342,7 @@ def test_stale_asof_gets_flagged(monkeypatch):
             out.append(market._fmt_quote(n, t, "US", 100.0, 1.0, asof, 99.0))
         return out
     monkeypatch.setattr(market, "us_quotes_batch", fake_batch)
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
     quotes = market.fetch_indices(
         {"^DJI": "다우존스", "^IXIC": "나스닥", "^KS200": "KOSPI200"})
     by = {q["ticker"]: q for q in quotes}
@@ -276,6 +359,7 @@ def test_newer_asof_not_marked_stale(monkeypatch):
             out.append(market._fmt_quote(n, t, "US", 100.0, 1.0, asof, 99.0))
         return out
     monkeypatch.setattr(market, "us_quotes_batch", fake_batch)
+    monkeypatch.setattr(market, "kr_index_quote", lambda *a, **k: None)
     quotes = market.fetch_indices(
         {"^DJI": "다우존스", "^IXIC": "나스닥", "KRW=X": "원/달러"})
     by = {q["ticker"]: q for q in quotes}
