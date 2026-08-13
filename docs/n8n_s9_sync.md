@@ -31,13 +31,22 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 3. 워크플로 Settings → **Timezone: Asia/Seoul** 확인
 4. 활성화(Active 토글)
 
-동작: 평일 **07:10**(us 리포트) · **08:50**(kr 병합본) · **09:40**(재시도) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
+동작: 평일 **07:10**(us 리포트) · **08:50**(kr 병합본) · **09:40**(재시도) · **17:00**(noon/ETF 등 오후 리포트) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
 
 > ⚠️ **이미 예전 버전을 import 해뒀다면 다시 import 해야 합니다.** n8n은 JSON 파일과 연결돼 있지 않고 import 시점의 사본을 들고 있습니다. 기존 워크플로를 열어 전체 선택 후 삭제하고 붙여넣거나, 새로 import한 뒤 옛 워크플로를 비활성화하세요 (둘 다 Active면 같은 파일을 두 번 씁니다).
 
 ### 09:40 재시도 슬롯이 있는 이유
 
 GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KST에 끝나 08:50 fetch까지 마진이 46분뿐이었습니다. 지연이 조금만 더 커지면 그날 병합본을 놓치는데, 다음날 실행은 "오늘 날짜"만 보므로 **영구 누락**이 됩니다. 09:40 슬롯이 이 구멍을 막습니다. 이미 받은 파일은 같은 내용으로 덮어쓰므로 중복 실행은 무해합니다.
+
+### 17:00 슬롯이 있는 이유 (2026-08-13 추가)
+
+noon 세션(정오 리포트)은 라이브 창을 놓치면 다시보기 폴백으로 넘어가는데, 이땐 13시를 넘겨
+끝나는 경우가 있다(2026-08-13 실제 사례: 13:20 시작). ETF 리뷰 등도 오전 슬롯 이후에나
+올라온다. 기존엔 마지막 슬롯이 09:40이라 이런 오후 리포트를 자동으로 못 가져왔고, 그날 오전
+리포트는 이미 있으니 "누락?" 경고도 안 떠서 사람이 알아채기 전까진 조용히 빠지는 구멍이었다.
+17:00 슬롯이 이 구멍을 막는다 — 다이제스트 워크플로(18:00 발송) 직전에 그날 오후 리포트까지
+싹 챙기는 타이밍이기도 하다.
 
 ### 누락 경고
 
@@ -93,7 +102,7 @@ GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KS
 
 | # | 노드 | 설정 |
 |---|------|------|
-| 1 | Schedule Trigger | Cron: `10 7 * * 1-5`, `50 8 * * 1-5`, `40 9 * * 1-5` (KST) |
+| 1 | Schedule Trigger | Cron: `10 7 * * 1-5`, `50 8 * * 1-5`, `40 9 * * 1-5`, `0 17 * * 1-5` (KST) |
 | 2 | Code (오늘 경로 계산) | 아래 스니펫 |
 | 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, Options → Response → **Never Error** 켜기 |
 | 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출. 0건이고 `hour >= 9` 면 `{missing:true, text}` 1건 반환 |
