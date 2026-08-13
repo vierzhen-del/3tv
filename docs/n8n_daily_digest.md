@@ -18,6 +18,12 @@ RaeVault(=vierzhen_home)/3protv/YYYY/MM/*ymd*.md ─(읽기)─▶ Gemini 요약
   이미 한 번 요약된 오늘/정오/야간/ETF 리포트만 Gemini에 넘깁니다. 기사 원문까지
   넣으면 프롬프트가 과도하게 커지고, 개별 리포트 발행 시 이미 텔레그램으로 나간
   내용과 겹치는 요약을 또 만들게 됩니다.
+- **다이제스트 구성(2026-08-13 확장)**: 3개 섹션 — ① 📊 주요 지수(다우/S&P500/
+  나스닥/코스피/코스닥) 전일 대비, ② 📈 리포트에 언급된 종목 마감 전일 대비,
+  ③ 📋 오늘 흐름 3~5줄 요약. ①·②는 리포트 본문에 이미 있는 `• 이름: 종가 아이콘
+  ▲/▼N%` 형식의 시세 줄(`report.py`의 `_quote_line()`이 만드는 포맷)을 Gemini가
+  찾아서 정리하는 것이지, 별도로 시세를 다시 조회하지 않습니다 — 리포트에 없는
+  지수/종목은 "데이터 없음"/"언급 종목 없음"으로 표기됩니다.
 
 ## 사전 준비
 
@@ -67,7 +73,7 @@ Bot API의 `sendMessage`는 요청 1회당 `chat_id` **하나만** 받는다. `"
 | 1 | Schedule Trigger | Cron: `0 18 * * 1-5` (KST, 평일 18:00) |
 | 2 | Code (오늘 경로 계산) | yyyy/mm/dd/ymd/dateLabel 계산 |
 | 3 | Read/Write Files from Disk (Read) | fileSelector: `/root/obsidian/3protv/{yyyy}/{mm}/*{ymd}*.md` (glob) |
-| 4 | Code (다이제스트용 본문 구성) | `3protv기사_*` 제외, 리포트당 4000자 상한, 프롬프트 조립. 0건이면 `{skip:true}` |
+| 4 | Code (다이제스트용 본문 구성) | `3protv기사_*` 제외, 리포트당 4000자 상한, 지수/종목/흐름 3섹션 프롬프트 조립. 0건이면 `{skip:true}` |
 | 5 | IF (리포트 없음?) | `{{ $json.skip }}` true → 종료, false → Gemini 호출 |
 | 6 | HTTP Request (Gemini 요약) | POST `.../models/gemini-3.1-flash-lite:generateContent?key=<KEY>`, **Never Error** 켜기 |
 | 7 | Code (요약 파싱) | 응답에서 텍스트 추출(실패 시 경고문으로 대체, 침묵 실패 금지) + chat_id별 아이템 분리 |
