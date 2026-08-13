@@ -58,8 +58,29 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 
 `3protv/YYYY/MM/`에 오늘 날짜 md가 하나도 없으면 **"누락?" IF 노드**가 텔레그램 경고를 보냅니다.
 
-- **09:40 슬롯에서만** 보냅니다 — 07:10 시점엔 kr 병합본이 아직 없는 게 정상이라, 그때 경고하면 매일 오탐이 납니다. 판단은 "오늘 경로 계산" 노드가 내려주는 `hour` 값으로 합니다.
+- **13:00·17:30 슬롯에서만** 보냅니다(`hour >= 9`) — 07:10/08:50 시점엔 정오 리포트가 아직 없는 게 정상이라, 그때 경고하면 매일 오탐이 납니다. 판단은 "오늘 경로 계산" 노드가 내려주는 `hour` 값으로 합니다.
 - `3protv/2026/07` 폴더 자체가 없으면 GitHub API가 **404**를 주는데, "파일 목록 조회" 노드의 `neverError` 옵션이 이를 정상 응답으로 받아 넘겨 흐름이 끊기지 않게 합니다. (2026-07-27 사고 당시엔 이 404에서 워크플로가 조용히 멈췄습니다.)
+
+### 🔴 `_index.md`는 정기 동기화로 한 번도 갱신된 적이 없었다 (2026-08-14 사고)
+
+"오늘 파일 필터" 노드가 `f.name.includes(ymd)`로 **오늘 날짜가 파일명에 포함된 것만** 가져온다.
+그런데 `_index.md`(일자별 리포트 wiki-link 카탈로그, `3protv/YYYY/MM/_index.md`)는 파일명에
+날짜가 없다 — 그래서 이 필터에 **단 한 번도 걸린 적이 없다.** 실제 일자별 리포트 파일들은
+매일 정상 동기화되고 있었는데, 이 인덱스 파일만 조용히 정체돼 있었던 것이다.
+
+발견 경위: 사용자가 볼트 파일 존재 여부를 `_index.md`로 확인하는 습관이 있었는데, 실제
+리포트는(정오/오늘/야간/기사/ETF 전부) 볼트에 잘 들어가 있었음에도 인덱스가 백필 시점
+(8/11)에서 멈춰 있어 "8/12 이후 저장 안 됨"으로 오인했다. GitHub 원본의 인덱스는 정상
+갱신되고 있었다 — 볼트 쪽 사본만 안 따라간 것.
+
+**수정**: "오늘 파일 필터"가 날짜 매칭 리스트(`today`)와는 별개로, 폴더 목록에서
+`_index.md`를 찾아 **매 실행마다 무조건 추가로 다운로드·덮어쓰기**하도록 했다. 누락 판정
+(`today.length === 0`)에는 영향을 주지 않도록 분리했다 — `_index.md`가 항상 최신으로
+보인다고 해서 "오늘 리포트가 있다"고 오판하면 안 되기 때문이다.
+
+**교훈**: "오늘 날짜가 파일명에 포함된 것만 동기화"라는 필터 설계는, 날짜 없이 계속
+갱신되는 부속 파일(인덱스·카탈로그 등)을 구조적으로 빠뜨린다. 이런 파일은 날짜 필터와
+무관하게 항상 최신화하는 별도 경로가 필요하다.
 
 ### 🔴 write 단계가 볼트 쪽 폴더 미생성으로 매번 죽고 있었다 (2026-08-11 사고)
 
@@ -111,7 +132,7 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 | 1 | Schedule Trigger | Cron: `10 7 * * 1-5`, `50 8 * * 1-5`, `0 13 * * 1-5`, `30 17 * * 1-5` (KST) |
 | 2 | Code (오늘 경로 계산) | 아래 스니펫 |
 | 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, Options → Response → **Never Error** 켜기 |
-| 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출. 0건이고 `hour >= 9` 면 `{missing:true, text}` 1건 반환 |
+| 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출. 0건이고 `hour >= 9` 면 `{missing:true, text}` 1건 반환. `_index.md`는 날짜 매칭과 무관하게 매번 별도로 추가(2026-08-14 수정) |
 | 5 | IF (누락?) | 조건: `{{ $json.missing }}` is true → 출력 0(참)=경고, 출력 1(거짓)=저장 폴더 생성 |
 | 6 | HTTP Request (텔레그램 경고) | POST `https://api.telegram.org/bot<TOKEN>/sendMessage`, JSON body `{chat_id, text}` |
 | 7 | Execute Command (저장 폴더 생성) | `mkdir -p "$(dirname "{{ $json.target }}")"` — Code 노드 + `require('fs')`는 이 인스턴스 샌드박스에 막혀 안 됨. **다운로드보다 먼저** 배치(이유는 위 사고 기록 참고) |
