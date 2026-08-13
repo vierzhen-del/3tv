@@ -159,6 +159,39 @@ Command는 입력 binary를 보존하지 않으므로, "md 다운로드"(binary 
 이제 07:10/08:50/09:40 정기 실행부터 실제 볼트에 바로 반영된다. 다음 정기 실행에서
 한 번 더 확인해두면 완전히 안심할 수 있다.
 
+### 후속: 같은 날 오후 PostgreSQL이 또 죽어있었다 (2026-08-13)
+
+bind mount 해결 며칠 뒤, n8n 웹 UI 로그인이 계정/비밀번호와 무관하게 안 되는 상황이
+발생했다. 원인은 로그인 문제가 아니라 **PostgreSQL 프로세스 자체가 죽어있던 것** —
+`n8n.log`에 `connect ECONNREFUSED 127.0.0.1:5432`가 수천 회 반복돼 있었다. n8n이
+매 로그인 시도마다 DB 연결에 실패해 "로그인 안 됨"으로만 보였을 뿐이다.
+
+**진단 순서(중요)**: 로그인 화면이 "Sign in"인지 "Set up owner account"(최초 설정)인지
+확인하는 것보다 **먼저 `n8n.log`에서 DB 연결 에러부터 grep**했어야 빨랐다 — 계정 자체는
+멀쩡했고(오너 계정 row 그대로 존재), 문제는 한 단계 아래(DB 프로세스)에 있었다.
+
+**원인**: `postmaster.pid`가 이미 죽은 PID를 가리키는 **stale lock 파일**로 남아있어
+PostgreSQL이 재기동을 거부하고 있었다 — 2026-07-20 3중 장애 때와 같은 클래스의 문제
+(프로세스가 비정상 종료되면서 lock만 남는 패턴). 이번 bind mount 재기동 체인(기존
+프로세스 pkill → n8n_launch.sh 재실행) 어딘가에서 postgres가 함께 죽은 것으로 보인다.
+
+**복구**:
+```bash
+rm -f /var/lib/postgresql/17/main/postmaster.pid
+su - postgres -c "pg_ctl -D /var/lib/postgresql/17/main -l /tmp/pg.log start"
+```
+데이터 유실 없이 정상 기동 확인(오너 계정 `vierzhen@gmail.com` row 그대로).
+
+**교훈**: n8n_launch.sh가 "PostgreSQL 자동 점검·복구"를 표방하지만, **매번 완전한
+전수 복구를 보장하진 못한다** — stale postmaster.pid 같은 케이스는 스크립트가 못
+잡을 수 있다. n8n 관련 문제(로그인·워크플로 실행 불가 등)가 나오면, 계정/권한을
+의심하기 전에 `n8n.log`에서 `ECONNREFUSED`·`postgres` 관련 에러부터 먼저 grep할 것.
+
+**부수 발견**: n8n-mcp의 `n8n_list_workflows` 툴이 이 n8n 버전(1.70.0)이 모르는
+쿼리 파라미터(`excludePinnedData`)를 보내 `VALIDATION_ERROR`를 낸다 — 인증과는
+무관한 별개의 n8n-mcp/n8n 버전 호환성 문제. 당장 급하지 않으면 워크플로 목록·설정은
+n8n 웹 UI로 직접 하고, 이 문제는 나중에 n8n-mcp 버전을 맞출 때 같이 본다.
+
 ## ⚠️ 「옵시디안에서 열기」 딥링크는 걷어냈다 (2026-08-02)
 
 `obsidian://search?vault=…` 딥링크는 **탭S9에서 눌러도 옵시디안이 열리지 않았다.** 안드로이드가
