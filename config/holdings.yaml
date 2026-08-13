@@ -38,6 +38,13 @@ holdings:
     market: US
     aliases: ["SpaceX", "스페이스엑스"]
     # 비상장이라 yfinance 시세 조회는 항상 실패(null) — 방송 언급 체크만 동작
+  - name: "앤트로픽"
+    ticker: "ANTHROPIC"
+    market: US
+    aliases: ["Anthropic", "엔트로픽", "앤트로픽AI", "클로드"]
+    # 2026-08-13 기준 미상장(IPO 10월 예정, 확정 티커 없음) — ticker는 SpaceX와
+    # 같은 방식의 placeholder라 시세 조회는 항상 실패(null), 방송 언급 체크만 동작.
+    # 실제 상장 티커가 배정되면 그 값으로 교체할 것.
   - name: "테슬라"
     ticker: "TSLA"
     market: US
