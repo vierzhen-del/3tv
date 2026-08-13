@@ -7,7 +7,7 @@
   "nodes": [
     {
       "id": "schedule",
-      "name": "평일 07:10 / 08:50 / 09:40 / 17:00",
+      "name": "평일 07:10 / 08:50 / 13:00 / 19:00",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -27,11 +27,11 @@
             },
             {
               "field": "cronExpression",
-              "expression": "40 9 * * 1-5"
+              "expression": "0 13 * * 1-5"
             },
             {
               "field": "cronExpression",
-              "expression": "0 17 * * 1-5"
+              "expression": "0 19 * * 1-5"
             }
           ]
         }
@@ -47,7 +47,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "// OWNER를 본인 GitHub 계정으로 수정하세요\nconst OWNER = \"vierzhen-del\";\nconst REPO = \"3tv-reports\";\nconst now = new Date(new Date().toLocaleString(\"en-US\", {timeZone: \"Asia/Seoul\"}));\nconst yyyy = String(now.getFullYear());\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst ymd = yyyy + mm + String(now.getDate()).padStart(2, \"0\");\n// hour: 09:40/17:00 슬롯(hour>=9)에서만 누락 경고를 보내기 위한 판단 근거.\n// 07:10 슬롯엔 kr 병합본이 아직 없는 게 정상이라 그때 경고하면 매일 오탐이 난다.\n// 17:00 슬롯은 noon/ETF처럼 오전 슬롯 이후 늦게 올라오는 리포트를 잡기 위해\n// 2026-08-13 추가 — 그날 아침 리포트가 이미 있어 오탐 위험은 낮다.\nconst hour = now.getHours();\nconst apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/3protv/${yyyy}/${mm}?ref=main`;\nreturn [{ json: { yyyy, mm, ymd, hour, apiUrl } }];"
+        "jsCode": "// OWNER를 본인 GitHub 계정으로 수정하세요\nconst OWNER = \"vierzhen-del\";\nconst REPO = \"3tv-reports\";\nconst now = new Date(new Date().toLocaleString(\"en-US\", {timeZone: \"Asia/Seoul\"}));\nconst yyyy = String(now.getFullYear());\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst ymd = yyyy + mm + String(now.getDate()).padStart(2, \"0\");\n// hour: 13:00/19:00 슬롯(hour>=9)에서만 누락 경고를 보내기 위한 판단 근거.\n// 07:10/08:50 슬롯엔 정오 리포트가 아직 없는 게 정상이라 그때 경고하면 매일\n// 오탐이 난다. 2026-08-14 09:40→13:00, 17:00→19:00으로 시간 조정(사용자\n// 확정 — 리포트 실제 발행 시각에 맞춤: 정오 리포트는 라이브 창을 놓치면\n// 다시보기 폴백으로 13시를 넘겨 끝나는 경우가 있어 13:00에 맞춰 받고,\n// 19:00은 그날 마지막 catch-all).\nconst hour = now.getHours();\nconst apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/3protv/${yyyy}/${mm}?ref=main`;\nreturn [{ json: { yyyy, mm, ymd, hour, apiUrl } }];"
       }
     },
     {
