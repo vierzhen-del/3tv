@@ -122,7 +122,7 @@
       "typeVersion": 2,
       "position": [1280, 100],
       "parameters": {
-        "jsCode": "// Gemini 실패(429 할당량 소진 등)도 조용히 죽지 않고 텔레그램으로 알린다\n// (2026-07-27 GH_PAT 침묵 실패 사고 재발 방지 원칙과 동일선상)\nconst res = $json;\nconst built = $('다이제스트용 본문 구성').first().json;\nconst { yyyy, mm } = $('오늘 경로 계산').first().json;\nconst candidate = res.candidates && res.candidates[0];\nconst text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0]\n  ? candidate.content.parts[0].text.trim()\n  : null;\n\nlet message;\nif (text) {\n  message = `📋 3프로TV 오늘의 종합 다이제스트 (${built.dateLabel})\\n\\n${text}\\n\\n`\n    + `— 오늘 발행된 리포트 ${built.count}건 종합 (원문: 옵시디안 3protv/${yyyy}/${mm}/)`;\n} else {\n  message = `⚠️ 오늘(${built.dateLabel}) 다이제스트 요약 생성 실패 (Gemini 응답 이상 — 할당량 소진 가능성)\\n`\n    + `개별 리포트 ${built.count}건은 정상 저장됐습니다 — 옵시디안에서 직접 확인해주세요.`;\n}\nreturn [{ json: { text: message } }];"
+        "jsCode": "// Gemini 실패(429 할당량 소진 등)도 조용히 죽지 않고 텔레그램으로 알린다\n// (2026-07-27 GH_PAT 침묵 실패 사고 재발 방지 원칙과 동일선상)\nconst res = $json;\nconst built = $('다이제스트용 본문 구성').first().json;\nconst { yyyy, mm } = $('오늘 경로 계산').first().json;\nconst candidate = res.candidates && res.candidates[0];\nconst text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0]\n  ? candidate.content.parts[0].text.trim()\n  : null;\n\nlet message;\nif (text) {\n  message = `📋 3프로TV 오늘의 종합 다이제스트 (${built.dateLabel})\\n\\n${text}\\n\\n`\n    + `— 오늘 발행된 리포트 ${built.count}건 종합 (원문: 옵시디안 3protv/${yyyy}/${mm}/)`;\n} else {\n  message = `⚠️ 오늘(${built.dateLabel}) 다이제스트 요약 생성 실패 (Gemini 응답 이상 — 할당량 소진 가능성)\\n`\n    + `개별 리포트 ${built.count}건은 정상 저장됐습니다 — 옵시디안에서 직접 확인해주세요.`;\n}\n\n// 텔레그램 chat_id는 콤마로 합쳐서 한 번에 못 보낸다(2026-08-13 사고 —\n// Bot API는 요청 1회당 chat_id 1개만 받는다). 방마다 아이템을 나눠 반환하면\n// 다음 노드(텔레그램 발송)가 아이템 수만큼 자동으로 반복 호출된다.\nconst chatIds = [\"<N8N_TELEGRAM_CHAT_ID_1>\", \"<N8N_TELEGRAM_CHAT_ID_2>\"];\nreturn chatIds.map(id => ({ json: { text: message, chat_id: id } }));"
       }
     },
     {
@@ -136,7 +136,7 @@
         "url": "https://api.telegram.org/bot<N8N_TELEGRAM_BOT_TOKEN>/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: \"<N8N_TELEGRAM_CHAT_ID>\", text: $json.text }) }}",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.chat_id, text: $json.text }) }}",
         "options": {}
       }
     }

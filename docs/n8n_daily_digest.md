@@ -39,12 +39,26 @@ night(8슬롯+digest) 로 이미 대부분 소진합니다(`config/settings.yaml
 ## 워크플로 등록 (import 방식)
 
 1. n8n 웹 UI → Workflows → **Import from File** → `docs/n8n_daily_digest_workflow.json`
-2. import 후 수정할 것 3곳:
+2. import 후 수정할 것:
    - **"Gemini 요약" HTTP Request 노드**: URL의 `<N8N_GEMINI_API_KEY>`를 발급받은 키로 교체
-   - **"텔레그램 발송" HTTP Request 노드**: `<N8N_TELEGRAM_BOT_TOKEN>` / `<N8N_TELEGRAM_CHAT_ID>`를
+   - **"텔레그램 발송" HTTP Request 노드**: URL의 `<N8N_TELEGRAM_BOT_TOKEN>`을
      `n8n_s9_sync.md`와 동일한 값으로 교체
+   - **"요약 파싱" Code 노드**: `chatIds` 배열의 `<N8N_TELEGRAM_CHAT_ID_1>` /
+     `<N8N_TELEGRAM_CHAT_ID_2>`를 실제 chat id로 교체 (여러 방에 보낼 필요 없으면
+     배열에 하나만 남겨도 됨)
 3. 워크플로 Settings → **Timezone: Asia/Seoul** 확인
 4. 활성화(Active 토글)
+
+### ⚠️ 텔레그램 chat_id는 콤마로 합쳐서 한 번에 못 보낸다 (2026-08-13 사고)
+
+Bot API의 `sendMessage`는 요청 1회당 `chat_id` **하나만** 받는다. `"id1,id2"`처럼
+콤마로 합친 문자열을 넣으면 그 문자열 전체를 하나의 잘못된 id로 해석해 실패한다
+(형식을 배열·따옴표로 바꿔도 마찬가지 — 애초에 한 요청에 여러 대상을 담는 방법이
+없다). 그래서 "요약 파싱" 노드가 대상 chat_id 수만큼 **아이템을 나눠 반환**하고,
+"텔레그램 발송" 노드는 `chat_id: $json.chat_id`로 아이템별 값을 참조한다 — n8n이
+아이템 수만큼 그 노드를 자동으로 반복 호출하므로 각 방에 별도 요청이 간다.
+(3tv Python 파이프라인의 `notify_telegram.py`도 `TELEGRAM_CHAT_ID`를 단일 값으로만
+쓴다 — 콤마 다중 발송이 필요하면 거기도 같은 방식의 수정이 필요하다.)
 
 ## 노드 구조
 
@@ -56,8 +70,8 @@ night(8슬롯+digest) 로 이미 대부분 소진합니다(`config/settings.yaml
 | 4 | Code (다이제스트용 본문 구성) | `3protv기사_*` 제외, 리포트당 4000자 상한, 프롬프트 조립. 0건이면 `{skip:true}` |
 | 5 | IF (리포트 없음?) | `{{ $json.skip }}` true → 종료, false → Gemini 호출 |
 | 6 | HTTP Request (Gemini 요약) | POST `.../models/gemini-3.1-flash-lite:generateContent?key=<KEY>`, **Never Error** 켜기 |
-| 7 | Code (요약 파싱) | 응답에서 텍스트 추출. 실패 시 "요약 생성 실패, 리포트는 정상 저장됨" 경고문으로 대체(침묵 실패 금지) |
-| 8 | HTTP Request (텔레그램 발송) | POST `https://api.telegram.org/bot<TOKEN>/sendMessage` |
+| 7 | Code (요약 파싱) | 응답에서 텍스트 추출(실패 시 경고문으로 대체, 침묵 실패 금지) + chat_id별 아이템 분리 |
+| 8 | HTTP Request (텔레그램 발송) | POST `https://api.telegram.org/bot<TOKEN>/sendMessage`, body의 `chat_id`는 `$json.chat_id` 참조 — 아이템 수만큼 반복 호출됨 |
 
 ## 실패 처리 원칙
 
