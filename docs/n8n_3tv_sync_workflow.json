@@ -1,8 +1,8 @@
 {
   "name": "3tv 리포트 → RaeVault 동기화",
   "settings": {
-    "timezone": "Asia/Seoul",
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul"
   },
   "nodes": [
     {
@@ -47,7 +47,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "// OWNER를 본인 GitHub 계정으로 수정하세요\nconst OWNER = \"vierzhen-del\";\nconst REPO = \"3tv-reports\";\nconst now = new Date(new Date().toLocaleString(\"en-US\", {timeZone: \"Asia/Seoul\"}));\nconst yyyy = String(now.getFullYear());\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst ymd = yyyy + mm + String(now.getDate()).padStart(2, \"0\");\n// hour: 13:00/17:30 슬롯(hour>=9)에서만 누락 경고를 보내기 위한 판단 근거.\n// 07:10/08:50 슬롯엔 정오 리포트가 아직 없는 게 정상이라 그때 경고하면 매일\n// 오탐이 난다. 2026-08-14 09:40→13:00, 17:00→19:00→17:30으로 시간 조정\n// (사용자 확정 — 리포트 실제 발행 시각 + 18:00 다이제스트 발송 전 마감을\n// 함께 고려: 정오 리포트가 다시보기 폴백으로 13시를 넘기는 경우가 있어\n// 13:00에 맞춰 받고, 17:30이 다이제스트 직전 마지막 catch-all).\nconst hour = now.getHours();\nconst apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/3protv/${yyyy}/${mm}?ref=main`;\nreturn [{ json: { yyyy, mm, ymd, hour, apiUrl } }];"
+        "jsCode": "// OWNER를 본인 GitHub 계정으로 수정하세요\nconst OWNER = \"vierzhen-del\";\nconst REPO = \"3tv-reports\";\nconst now = new Date(new Date().toLocaleString(\"en-US\", {timeZone: \"Asia/Seoul\"}));\nconst yyyy = String(now.getFullYear());\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst ymd = yyyy + mm + String(now.getDate()).padStart(2, \"0\");\n// hour: 마지막 슬롯(09:40)에서만 누락 경고를 보내기 위한 판단 근거.\n// 07:10 슬롯엔 kr 병합본이 아직 없는 게 정상이라 그때 경고하면 매일 오탐이 난다.\nconst hour = now.getHours();\nconst apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/3protv/${yyyy}/${mm}?ref=main`;\nreturn [{ json: { yyyy, mm, ymd, hour, apiUrl } }];"
       }
     },
     {
@@ -59,21 +59,15 @@
         400,
         0
       ],
+      "alwaysOutputData": true,
       "parameters": {
         "url": "={{ $json.apiUrl }}",
-        "options": {
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        },
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "Bearer <N8N_GITHUB_PAT>"
+              "value": "Bearer <REDACTED>"
             },
             {
               "name": "Accept",
@@ -84,9 +78,15 @@
               "value": "n8n-3tv-sync"
             }
           ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         }
-      },
-      "alwaysOutputData": true
+      }
     },
     {
       "id": "filtertoday",
@@ -102,6 +102,54 @@
       }
     },
     {
+      "id": "download",
+      "name": "md 다운로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        100
+      ],
+      "parameters": {
+        "url": "={{ $('오늘 파일 필터').item.json.download_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <REDACTED>"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-sync"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "writefile",
+      "name": "RaeVault에 저장",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        100
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('오늘 파일 필터').item.json.target }}",
+        "options": {}
+      }
+    },
+    {
       "id": "if-missing",
       "name": "누락?",
       "type": "n8n-nodes-base.if",
@@ -113,10 +161,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 2,
             "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
+            "caseSensitive": true,
+            "typeValidation": "loose"
           },
           "conditions": [
             {
@@ -146,83 +194,101 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "https://api.telegram.org/bot<N8N_TELEGRAM_BOT_TOKEN>/sendMessage",
+        "url": "https://api.telegram.org/bot<REDACTED>/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: \"<N8N_TELEGRAM_CHAT_ID>\", text: $json.text }) }}",
+        "jsonBody": "={{ JSON.stringify({ chat_id: \"5607052382\", text: $json.text }) }}",
         "options": {}
       }
     },
     {
-      "id": "mkdirp",
-      "name": "저장 폴더 생성",
+      "id": "mkdirfix2",
+      "name": "저장 전 폴더 생성",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        980,
+        1080,
         100
       ],
+      "executeOnce": true,
       "parameters": {
-        "command": "=mkdir -p \"$(dirname \"{{ $json.target }}\")\""
-      },
-      "notesInFlow": true,
-      "notes": "2026-08-11: 처음엔 Code 노드 + require('fs')로 시도했으나 이 n8n 인스턴스의 Code 노드 샌드박스가 fs/path를 막아 죽었다(second-brain 워크플로에서 통했던 방식이 여기선 안 통함). Execute Command는 샌드박스를 타지 않고 셸에서 직접 실행되므로 이 방식으로 교체. 'md 다운로드'(바이너리 응답) 뒤가 아니라 앞에 배치한 이유는 아래 참고."
+        "command": "=mkdir -p \"$(dirname \"{{ $json.target }}\")\"; if [ \"$(basename \"{{ $json.target }}\")\" = \"_index.md\" ]; then echo MISSING; elif [ -f \"{{ $json.target }}\" ]; then echo EXISTS; else echo MISSING; fi"
+      }
     },
     {
-      "id": "download",
-      "name": "md 다운로드",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1180,
-        100
-      ],
-      "parameters": {
-        "url": "={{ $('오늘 파일 필터').item.json.download_url }}",
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "file"
-            }
-          }
-        },
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer <N8N_GITHUB_PAT>"
-            },
-            {
-              "name": "User-Agent",
-              "value": "n8n-3tv-sync"
-            }
-          ]
-        }
-      },
-      "notesInFlow": true,
-      "notes": "url을 $json.download_url 대신 $('오늘 파일 필터').item.json.download_url로 명시 참조 — 앞에 '저장 폴더 생성' 노드가 끼어들어도(그 노드의 출력 json은 stdout/exitCode뿐) 안 깨지도록."
-    },
-    {
-      "id": "writefile",
-      "name": "RaeVault에 저장",
-      "type": "n8n-nodes-base.readWriteFile",
+      "id": "backfilltrigger",
+      "name": "백필 수동 실행",
+      "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        1380,
-        100
+        200,
+        300
+      ],
+      "disabled": true,
+      "parameters": {}
+    },
+    {
+      "id": "backfillmonths",
+      "name": "백필 대상 월",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
       ],
       "parameters": {
-        "operation": "write",
-        "fileName": "={{ $('오늘 파일 필터').item.json.target }}",
-        "dataPropertyName": "data"
-      },
-      "notesInFlow": true,
-      "notes": "'md 다운로드' 바로 뒤에 이어붙여서 binary.data가 그대로 전달되게 한다 — Execute Command 노드는 입력 binary를 보존하지 않으므로 write 노드와 다운로드 노드 사이에 끼우면 안 됨."
+        "jsCode": "const OWNER = \"vierzhen-del\";\nconst REPO = \"3tv-reports\";\nconst months = [\"07\", \"08\"];\nreturn months.map(mm => ({ json: {\n  yyyy: \"2026\",\n  mm,\n  apiUrl: `https://api.github.com/repos/${OWNER}/${REPO}/contents/3protv/2026/${mm}?ref=main`\n}}));"
+      }
+    },
+    {
+      "id": "batchloop",
+      "name": "배치 반복",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        850,
+        300
+      ],
+      "parameters": {
+        "options": {}
+      }
+    },
+    {
+      "id": "skipcheck2",
+      "name": "이미 저장됨?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1080,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "exists-flag",
+              "leftValue": "={{ $json.stdout.trim() }}",
+              "rightValue": "MISSING",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
     }
   ],
   "connections": {
-    "평일 07:10 / 08:50 / 09:40": {
+    "평일 07:10 / 08:50 / 13:00 / 17:30": {
       "main": [
         [
           {
@@ -277,18 +343,70 @@
         ],
         [
           {
-            "node": "저장 폴더 생성",
+            "node": "배치 반복",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "저장 폴더 생성": {
+    "백필 수동 실행": {
+      "main": [
+        [
+          {
+            "node": "백필 대상 월",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "백필 대상 월": {
+      "main": [
+        [
+          {
+            "node": "파일 목록 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "배치 반복": {
+      "main": [
+        [],
+        [
+          {
+            "node": "저장 전 폴더 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "저장 전 폴더 생성": {
+      "main": [
+        [
+          {
+            "node": "이미 저장됨?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "이미 저장됨?": {
       "main": [
         [
           {
             "node": "md 다운로드",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "배치 반복",
             "type": "main",
             "index": 0
           }
@@ -300,6 +418,17 @@
         [
           {
             "node": "RaeVault에 저장",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RaeVault에 저장": {
+      "main": [
+        [
+          {
+            "node": "배치 반복",
             "type": "main",
             "index": 0
           }
