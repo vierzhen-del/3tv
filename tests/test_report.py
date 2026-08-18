@@ -1024,6 +1024,21 @@ def test_kr_prompt_keeps_its_own_section_title(monkeypatch):
     assert "8시 전후 캡처화면 정리" in captured["p"]
 
 
+def test_prompt_asks_for_kospi_kosdaq_quote_line(monkeypatch):
+    """2026-08-18 실측: 종합 다이제스트가 국내 지수를 못 찾는 원인이 여기 있었다 —
+    2) 주요 지표 지시문이 미국 지표만 나열해 KOSPI/KOSDAQ이 리포트에 quote 형식으로
+    나온 적이 없었다(데이터는 있는데 출력 지시가 없었음)."""
+    captured = {}
+
+    def fake(models, prompt, max_tokens=8000):
+        captured["p"] = prompt
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(report_mod, "_call_llm", fake)
+    _generate(Path(tempfile.mkdtemp()), session="kr", transcript="")
+    assert "국내 지수: KOSPI / KOSDAQ" in captured["p"]
+
+
 # ── 2026-08-01 가독성 개편: 접기 마커 + 링크 정규화 ──
 
 def test_flow_detail_mark_gets_folded():
