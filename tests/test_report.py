@@ -447,6 +447,68 @@ def test_fold_top_n_noop_when_within_limit():
     assert tg_format.FOLD_OPEN not in out
 
 
+def test_cap_news_head_moves_overflow_before_existing_rest():
+    """---기타--- 위 항목이 n개를 넘으면 코드가 강제로 자르고, 넘친 항목은
+    기존 ---기타--- 내용 앞에 끼워 넣는다(2026-08-18 "한국기사는 2개외 접기")."""
+    news = (
+        "• **삼성전자**: 274,500원 — 상승\n"
+        "  🔗 [기사1](https://n/1)\n"
+        "• **SK하이닉스**: 1,645,000원 — 상승\n"
+        "  🔗 [기사2](https://n/2)\n"
+        "• **나스닥지수**: 26,644.91 — 하락\n"
+        "  🔗 [기사3](https://n/3)\n"
+        "---기타---\n"
+        "• **인텔**: 약세\n"
+    )
+    out = report_mod._cap_news_head(news, 2)
+    head, _, rest = out.partition("---기타---")
+    assert "삼성전자" in head and "SK하이닉스" in head
+    assert "나스닥지수" not in head           # 3번째부터는 head에서 빠짐
+    assert "나스닥지수" in rest and "인텔" in rest   # 기존 기타 항목도 그대로 보존
+
+
+def test_cap_news_head_noop_within_limit():
+    news = "• **삼성전자**: 274,500원 — 상승\n• **SK하이닉스**: 1,645,000원 — 상승\n"
+    assert report_mod._cap_news_head(news, 2) == news
+
+
+def test_kr_news_capped_to_2_us_session_unaffected(tmp_path, monkeypatch):
+    """kr 세션은 종목기사 노출을 2개로 강제하고, us 세션은 그대로 둔다."""
+    news_body = """===TITLE===
+반도체급등
+===SIHWANG===
+1) 📌 요약
+• 나스닥 강세
+===NEWS===
+• **삼성전자**: 274,500원 📈 ▲2.43%
+  🔗 [기사1](https://n/1)
+• **SK하이닉스**: 1,645,000원 📈 ▲3.26%
+  🔗 [기사2](https://n/2)
+• **나스닥지수**: 26,644.91 📉 ▼0.32%
+  🔗 [기사3](https://n/3)
+• **마이크론**: 1,011.75 📈 ▲4.13%
+  🔗 [기사4](https://n/4)
+===HOLDINGS===
+===END==="""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: news_body)
+
+    kr_data = _generate(tmp_path, transcript="", session="kr")
+    kr_telegram = kr_data["reports"]["news_telegram"]
+    assert "삼성전자" in kr_telegram and "SK하이닉스" in kr_telegram
+    assert kr_telegram.index("SK하이닉스") < kr_telegram.index(tg_format.FOLD_OPEN)
+    assert "나스닥지수" in kr_telegram and "마이크론" in kr_telegram   # 접힌 채로 존재
+    # 저장(옵시디안 아카이브)용은 접지 않고 4종목 전부 그대로 남아야 한다
+    assert tg_format.FOLD_OPEN not in kr_data["reports"]["news"]
+    assert "마이크론" in kr_data["reports"]["news"]
+
+    us_data = _generate(tmp_path, transcript="", session="us")
+    us_telegram = us_data["reports"]["news_telegram"]
+    # us 세션은 캡을 적용하지 않으므로 ---기타--- 마커가 없는 이 응답은 그대로 노출
+    assert tg_format.FOLD_OPEN not in us_telegram
+    assert all(name in us_telegram for name in
+               ("삼성전자", "SK하이닉스", "나스닥지수", "마이크론"))
+
+
 def test_capture_rest_mark_folds_stocks_after_top_3(tmp_path, monkeypatch):
     """3) 캡처화면 정리에서 종목이 4개를 넘으면 ---시세상세--- 마커 아래로 접힌다
     (2026-08-11 실측: 국장 개별 종목 시세가 18종목까지 안 접힌 채 그대로 나갔다)."""
