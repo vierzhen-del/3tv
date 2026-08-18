@@ -206,6 +206,7 @@ NEWS_REST_MARK = "---기타---"
 # 접는 구조 — LLM에게 `<<<FOLD:...>>>` 문법을 직접 시키면 형식이 자주 깨진다.
 FLOW_DETAIL_MARK = "---수급상세---"     # 개인·외국인·기관 요약 아래의 세부 주체/TOP10
 US_CTX_MARK = "---미장참고---"          # kr 리포트에 딸려오는 미국장 내용
+CAPTURE_REST_MARK = "---시세상세---"    # 캡처화면 정리(3번)에서 상위 3종목 외 나머지
 
 
 # 공용 프롬프트의 번호 섹션 헤딩("1) 📌 ...", "2) 💹 ..." 등) — `_fold_after`가
@@ -384,6 +385,7 @@ def _parse_sections(text: str) -> dict:
     sihwang = _fold_after(sihwang, FLOW_DETAIL_MARK,
                           "수급 상세 (그외 주체 · TOP10 · ETF 등락)")
     sihwang = _fold_after(sihwang, US_CTX_MARK, "미국장 참고")
+    sihwang = _fold_after(sihwang, CAPTURE_REST_MARK, "그 외 종목 시세")
     sihwang = _fold_link_rows(sihwang)
 
     news_raw = sec.get("NEWS", "")
@@ -1293,6 +1295,9 @@ def generate_report(
      ③ `오늘 시황 전망 및 투자 대응`.
      특히 ②의 **수급 3행**(코스피/코스닥 개인·외국인·기관 순매수, 금투·투신 세부)은
      숫자 배치 자체가 정보이니 요약하지 말고 원문 그대로 옮기세요.
+   - **종목 블록(`**종목명**` 단위)이 4개를 넘으면** 상위 3개만 그대로 두고, 그
+     다음 줄에 `---시세상세---`를 단독으로 넣은 뒤 나머지 종목 블록을 이어서
+     쓰세요(코드가 이 마커 아래를 접습니다). 3개 이하면 마커 없이 그대로 두세요.
 
 4) 💼 **관심종목 업데이트** — 보유/관심 종목의 전일 종가·등락률 + 방송 언급 여부.
    ⚠️ **언급 여부는 이모지 하나로만 표시합니다 — 설명 문구를 쓰지 마세요.**

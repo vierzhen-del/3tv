@@ -447,6 +447,46 @@ def test_fold_top_n_noop_when_within_limit():
     assert tg_format.FOLD_OPEN not in out
 
 
+def test_capture_rest_mark_folds_stocks_after_top_3(tmp_path, monkeypatch):
+    """3) 캡처화면 정리에서 종목이 4개를 넘으면 ---시세상세--- 마커 아래로 접힌다
+    (2026-08-11 실측: 국장 개별 종목 시세가 18종목까지 안 접힌 채 그대로 나갔다)."""
+    stocks = "\n".join(
+        f"**종목{i}**\n- 현재가 {i}00원, 전일대비 ▲{i}0원 (+{i}.00%) (방송 화면 기준)"
+        for i in range(1, 6)
+    )
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: f"""===TITLE===
+반도체급등
+===SIHWANG===
+1) 📌 요약
+• 나스닥 강세
+
+3) 🖼 8시 전후 캡처화면 정리
+**종목1**
+- 현재가 100원, 전일대비 ▲10원 (+1.00%) (방송 화면 기준)
+**종목2**
+- 현재가 200원, 전일대비 ▲20원 (+2.00%) (방송 화면 기준)
+**종목3**
+- 현재가 300원, 전일대비 ▲30원 (+3.00%) (방송 화면 기준)
+---시세상세---
+**종목4**
+- 현재가 400원, 전일대비 ▲40원 (+4.00%) (방송 화면 기준)
+**종목5**
+- 현재가 500원, 전일대비 ▲50원 (+5.00%) (방송 화면 기준)
+
+4) 💼 관심종목 업데이트
+- 삼성전자: 278,500원 📈 ▲1.64%
+===NEWS===
+===HOLDINGS===
+===END===""")
+    data = _generate(tmp_path, transcript="")
+    telegram = data["reports"]["sihwang"]
+    assert "종목1" in telegram and "종목2" in telegram and "종목3" in telegram
+    assert telegram.index("종목3") < telegram.index(tg_format.FOLD_OPEN)
+    assert "종목4" in telegram and "종목5" in telegram      # 접힌 채로 본문에 남아있음
+    assert "---시세상세---" not in telegram                 # 마커 자체는 치환돼 사라짐
+    assert "관심종목 업데이트" in telegram                   # 4번 섹션은 접기 밖에 그대로
+
+
 def test_daily_section_folds_after_top_3(tmp_path, monkeypatch):
     """===DAILY=== 텔레그램 전송본은 상위 3개만 노출되고 나머지는 접힌다(2026-08-09 요청).
 
