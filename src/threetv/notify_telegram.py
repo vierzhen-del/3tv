@@ -15,35 +15,41 @@ def send_telegram(text: str, max_len: int = 4000, html: bool = False) -> bool:
     `<blockquote expandable>` 접기 블록이 눌러서 펼쳐진다(Bot API 7.3+).
     HTML 파싱이 실패하면(태그 깨짐 등) 그 조각만 평문으로 1회 재전송해
     메시지를 통째로 잃지 않는다.
+
+    TELEGRAM_CHAT_ID에 콤마로 여러 chat id를 넣으면 같은 내용을 각 방에
+    모두 보낸다(예: "12345,-1009876543210" → 개인 + 단체방 동시 발송).
     """
     token = env_token("TELEGRAM_BOT_TOKEN")
     # 기존 v28 .env 호환: TELEGRAM_CHAT_ID 없으면 TELEGRAM_NOTIFY_CHANNEL 사용
-    chat_id = env_token("TELEGRAM_CHAT_ID") or env_token("TELEGRAM_NOTIFY_CHANNEL")
-    if not token or not chat_id:
+    raw_chat_id = env_token("TELEGRAM_CHAT_ID") or env_token("TELEGRAM_NOTIFY_CHANNEL")
+    chat_ids = [c.strip() for c in raw_chat_id.split(",") if c.strip()]
+    if not token or not chat_ids:
         log.warning("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 미설정 — 텔레그램 전송 생략")
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    chunks = _split(text, max_len, html=html)
     ok = True
-    for chunk in _split(text, max_len, html=html):
-        payload = {"chat_id": chat_id, "text": chunk}
-        if html:
-            payload["parse_mode"] = "HTML"
-            payload["link_preview_options"] = {"is_disabled": True}
-        resp = requests.post(url, json=payload, timeout=30)
+    for chat_id in chat_ids:
+        for chunk in chunks:
+            payload = {"chat_id": chat_id, "text": chunk}
+            if html:
+                payload["parse_mode"] = "HTML"
+                payload["link_preview_options"] = {"is_disabled": True}
+            resp = requests.post(url, json=payload, timeout=30)
 
-        if resp.status_code != 200 and html:
-            # 파싱 실패 추정 → 태그를 벗겨 평문으로 한 번 더 (내용 유실 방지)
-            log.warning("텔레그램 HTML 파싱 실패(%d) → 평문 재전송: %s",
-                        resp.status_code, resp.text[:200])
-            resp = requests.post(
-                url, json={"chat_id": chat_id, "text": _strip_tags(chunk)}, timeout=30
-            )
-        if resp.status_code != 200:
-            log.error("텔레그램 전송 실패 %d: %s", resp.status_code, resp.text[:300])
-            ok = False
+            if resp.status_code != 200 and html:
+                # 파싱 실패 추정 → 태그를 벗겨 평문으로 한 번 더 (내용 유실 방지)
+                log.warning("텔레그램 HTML 파싱 실패(%s, %d) → 평문 재전송: %s",
+                            chat_id, resp.status_code, resp.text[:200])
+                resp = requests.post(
+                    url, json={"chat_id": chat_id, "text": _strip_tags(chunk)}, timeout=30
+                )
+            if resp.status_code != 200:
+                log.error("텔레그램 전송 실패(%s) %d: %s", chat_id, resp.status_code, resp.text[:300])
+                ok = False
     if ok:
-        log.info("텔레그램 전송 완료%s", " (HTML)" if html else "")
+        log.info("텔레그램 전송 완료%s (%d개 방)", " (HTML)" if html else "", len(chat_ids))
     return ok
 
 

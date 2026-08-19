@@ -17,6 +17,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -28,6 +29,15 @@ VAULT_TMP = REPO_ROOT / ".vault_tmp"
 
 # 볼트가 꺼져 있는 정상 상태 — 실패로 취급해 경고를 띄우면 안 된다
 DISABLED = "disabled"
+
+# 재시도해도 결과가 똑같을 실패 — 토큰이 진짜 잘못됐거나 repo가 없는 경우.
+# 이 외의 실패(SSL·타임아웃·일시적 네트워크 오류 등)는 GitHub Actions 러너의
+# 순간적인 hiccup일 때가 많아(2026-08-12 실측 — SSL 인증서 검증 실패 1회성 발생,
+# 전후 날짜는 전부 정상) 재시도 가치가 있다.
+_PERMANENT_FAILURE_MARKERS = (
+    "Invalid username or token", "Authentication failed", "Repository not found",
+)
+_CLONE_RETRIES = 3
 
 
 class ArchiveResult(NamedTuple):
@@ -64,33 +74,44 @@ def _clone_vault(obsidian_cfg: dict) -> tuple[Path | None, str]:
         log.info("옵시디안 아카이브 비활성 (vault_repo 미설정)")
         return None, DISABLED
     branch = obsidian_cfg.get("vault_branch", "main")
-    if VAULT_TMP.exists():
-        shutil.rmtree(VAULT_TMP)
     url = _vault_url(vault_repo)
-    try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", branch, url, str(VAULT_TMP)],
-            check=True, capture_output=True, timeout=300,
-        )
-        return VAULT_TMP, ""
-    except subprocess.CalledProcessError as e:
-        stderr = (e.stderr or b"").decode()
-        if "Remote branch" in stderr and "not found" in stderr:
-            # 커밋이 하나도 없는 완전히 빈 저장소 — 로컬에서 새로 초기화해
-            # 최초 커밋·push 시 branch가 원격에 생성되도록 한다
-            log.info("볼트 repo가 비어있음 — 최초 커밋으로 %s 브랜치를 새로 만듦", branch)
-            VAULT_TMP.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "init", "-b", branch, str(VAULT_TMP)],
-                           check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(VAULT_TMP), "remote", "add", "origin", url],
-                           check=True, capture_output=True)
+    for attempt in range(1, _CLONE_RETRIES + 1):
+        if VAULT_TMP.exists():
+            shutil.rmtree(VAULT_TMP)
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch, url, str(VAULT_TMP)],
+                check=True, capture_output=True, timeout=300,
+            )
             return VAULT_TMP, ""
-        reason = _clone_reason(stderr)
-        log.error("볼트 clone 실패: %s", stderr[-300:])
-        return None, reason
-    except subprocess.TimeoutExpired:
-        log.error("볼트 clone 타임아웃 (300초)")
-        return None, "clone 타임아웃 (300초) — 네트워크 문제"
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or b"").decode()
+            if "Remote branch" in stderr and "not found" in stderr:
+                # 커밋이 하나도 없는 완전히 빈 저장소 — 로컬에서 새로 초기화해
+                # 최초 커밋·push 시 branch가 원격에 생성되도록 한다
+                log.info("볼트 repo가 비어있음 — 최초 커밋으로 %s 브랜치를 새로 만듦", branch)
+                VAULT_TMP.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["git", "init", "-b", branch, str(VAULT_TMP)],
+                               check=True, capture_output=True)
+                subprocess.run(["git", "-C", str(VAULT_TMP), "remote", "add", "origin", url],
+                               check=True, capture_output=True)
+                return VAULT_TMP, ""
+            if any(m in stderr for m in _PERMANENT_FAILURE_MARKERS):
+                log.error("볼트 clone 실패(재시도 안 함 — 재발급 필요): %s", stderr[-300:])
+                return None, _clone_reason(stderr)
+            reason = _clone_reason(stderr)
+            detail = stderr.strip()[-200:]
+        except subprocess.TimeoutExpired:
+            reason = "clone 타임아웃 (300초) — 네트워크 문제"
+            detail = reason
+        if attempt < _CLONE_RETRIES:
+            log.warning("볼트 clone 실패(%d/%d 시도, %d초 뒤 재시도): %s",
+                       attempt, _CLONE_RETRIES, 5 * attempt, detail)
+            time.sleep(5 * attempt)
+        else:
+            log.error("볼트 clone 실패(%d회 재시도 소진): %s", _CLONE_RETRIES, detail)
+            return None, reason
+    raise AssertionError("unreachable — _CLONE_RETRIES >= 1 이므로 루프가 항상 return")
 
 
 def _clone_reason(stderr: str) -> str:
@@ -101,7 +122,31 @@ def _clone_reason(stderr: str) -> str:
         return "GH_PAT 인증 실패 — 토큰 만료/권한 부족으로 보임"
     if "Repository not found" in stderr:
         return "볼트 repo를 찾을 수 없음 — 이름 또는 PAT 접근 범위 확인"
-    return f"clone 실패: {stderr.strip()[-200:]}"
+    if "certificate verification failed" in stderr or "SSL" in stderr:
+        return (f"GitHub Actions 러너 SSL 인증서 검증 실패 — {_CLONE_RETRIES}회 재시도 후에도 "
+                "실패. 보통 러너 쪽 일시적 네트워크 문제(GH_PAT과 무관), 반복되면 "
+                "https://www.githubstatus.com 확인")
+    return f"clone 실패({_CLONE_RETRIES}회 재시도 후): {stderr.strip()[-200:]}"
+
+
+def remediation(reason: str) -> str:
+    """`_clone_reason`이 돌려준 실패 사유별로 다른 조치를 안내한다.
+
+    전부 "GH_PAT 재발급"으로 뭉치면 SSL 같은 무관한 원인에도 잘못된 안내가
+    나간다(2026-08-12 실측: 인증서 검증 실패인데 재발급 안내가 나갔던 사고).
+    main.py의 여러 세션(us/kr·noon·night·etf)과 scripts/check_vault_push.py가
+    전부 이 함수를 공유한다 — 따로 두면 한쪽만 고치고 나머지는 놓치기 쉽다.
+
+    ⚠️ SSL/타임아웃 케이스를 먼저 체크할 것 — 그 설명 문구 자체에 "GH_PAT과 무관"처럼
+    "GH_PAT"이라는 글자가 들어가서, 순서를 바꾸면 부분 문자열 매칭에 걸려 다시
+    잘못 분류된다(이 함수를 만들다가 실제로 한 번 겪은 버그)."""
+    if "SSL" in reason or "인증서" in reason:
+        return "조치 불필요할 가능성 높음(러너 일시 장애, 자동 재시도 적용됨) — 반복되면 https://www.githubstatus.com 확인"
+    if "타임아웃" in reason or "네트워크" in reason:
+        return "일시적 네트워크 문제로 보임 — 다음 세션에서 자동 재시도됨, 반복되면 확인 필요"
+    if "GH_PAT" in reason or "인증 실패" in reason:
+        return "GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인"
+    return "3tv Actions의 vault-check 워크플로 수동 실행으로 원인 확인"
 
 
 def _today_file(vault: Path, base_path: str, keyword: str, date: datetime) -> Path:
@@ -148,6 +193,22 @@ def obsidian_deeplink(
             f"&query={quote(f'{file_prefix}_{ymd}')}")
 
 
+def vault_location_url(obsidian_cfg: dict, rel: str) -> str:
+    """rel 파일의 https 링크만 (중계 repo, 어디서나 열림). repo 미설정/rel 없으면 빈 문자열.
+
+    카카오 「나에게 보내기」 클릭 링크처럼 마크다운이 아니라 URL 자체가 필요한
+    곳에서 vault_location_link와 계산을 공유하려고 분리했다.
+    """
+    if not rel:
+        return ""
+    repo = ((obsidian_cfg or {}).get("vault_repo") or "").strip()
+    if not repo:
+        return ""
+    branch = (obsidian_cfg or {}).get("vault_branch", "main")
+    # safe="/"가 없으면 경로 구분자까지 %2F로 인코딩돼 GitHub URL이 깨진다
+    return f"https://github.com/{repo}/blob/{branch}/{quote(rel, safe='/')}"
+
+
 def vault_location_link(obsidian_cfg: dict, rel: str) -> str:
     """텔레그램 하단에 붙는 「저장위치」 한 줄.
 
@@ -164,12 +225,9 @@ def vault_location_link(obsidian_cfg: dict, rel: str) -> str:
     cfg = obsidian_cfg or {}
     vault = (cfg.get("vault_name") or "").strip()
     shown = f"{vault}/{rel}" if vault else rel
-    repo = (cfg.get("vault_repo") or "").strip()
-    if not repo:
+    url = vault_location_url(obsidian_cfg, rel)
+    if not url:
         return f"🗂 저장위치: {shown}"
-    branch = cfg.get("vault_branch", "main")
-    # safe="/"가 없으면 경로 구분자까지 %2F로 인코딩돼 GitHub URL이 깨진다
-    url = f"https://github.com/{repo}/blob/{branch}/{quote(rel, safe='/')}"
     return f"🗂 저장위치: [{shown}]({url})"
 
 

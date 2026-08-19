@@ -39,8 +39,8 @@ from .notify_kakao import send_kakao_memo
 from .notify_telegram import send_alert, send_telegram
 from .obsidian_archive import (DISABLED, ArchiveResult, archive_report,
                                archive_simple_report, read_night_slots,
-                               read_us_section_today, save_night_slot,
-                               vault_location_link)
+                               read_us_section_today, remediation, save_night_slot,
+                               vault_location_link, vault_location_url)
 from .report import (drop_etf_stocks, extract_mentions, generate_etf_review,
                      generate_night_digest,
                      generate_noon_report, generate_report,
@@ -332,13 +332,13 @@ def run_noon(args: argparse.Namespace, settings: dict, out_dir: Path) -> int:
     else:
         send_telegram(tg_format.to_telegram_html(body), settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(tg_format.to_plain(body))
+            send_kakao_memo(tg_format.to_plain(body),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
         if not args.skip_notify:
-            send_alert(f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n사유: {archived.reason}\n"
-                       "· 텔레그램/카카오 리포트는 정상 발송됐습니다.")
+            send_alert(_vault_alert(label, archived.reason))
         return 1
 
     log.info("=== %s 세션 완료 ===", label)
@@ -422,7 +422,7 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
         if not args.skip_notify:
             send_alert(
                 f"⚠️ 3tv {label} 종합 실패 ({now_kst():%m/%d %H:%M})\n사유: {reason}\n"
-                "슬롯 job이 전부 실패했거나 GH_PAT 문제일 수 있습니다."
+                f"조치: {remediation(reason)}"
             )
         return 1
     if len(slots) < n_slots:
@@ -450,13 +450,13 @@ def run_night_digest(args: argparse.Namespace, settings: dict, out_dir: Path) ->
     else:
         send_telegram(tg_format.to_telegram_html(body), settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(tg_format.to_plain(body))
+            send_kakao_memo(tg_format.to_plain(body),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
         if not args.skip_notify:
-            send_alert(f"⚠️ 3tv {label} 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n사유: {archived.reason}\n"
-                       "· 텔레그램/카카오 리포트는 정상 발송됐습니다.")
+            send_alert(_vault_alert(label, archived.reason))
         return 1
 
     log.info("=== %s 종합 완료 ===", label)
@@ -530,13 +530,13 @@ def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
         send_telegram(tg_format.to_telegram_html(body),
                       settings["telegram"]["max_message_len"], html=True)
         if settings.get("kakao", {}).get("enabled", True):
-            send_kakao_memo(tg_format.to_plain(body))
+            send_kakao_memo(tg_format.to_plain(body),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     if not archived.ok and not archived.skipped:
         log.error("볼트 저장 실패: %s", archived.reason)
         if not args.skip_notify:
-            send_alert(f"⚠️ 3tv ETF 리뷰 볼트 저장 실패 ({now_kst():%m/%d %H:%M})\n"
-                       f"사유: {archived.reason}\n· 텔레그램/카카오는 정상 발송됐습니다.")
+            send_alert(_vault_alert("ETF 리뷰", archived.reason))
         return 1
 
     log.info("=== ETF 포트폴리오 리뷰 완료 (%d종) ===", len(results))
@@ -753,7 +753,8 @@ def run(args: argparse.Namespace) -> int:
             send_telegram(tg_format.to_telegram_html(md), max_len, html=True)
         if settings.get("kakao", {}).get("enabled", True):
             # 카카오는 HTML/접기를 지원하지 않으므로 접기 마커만 걷어낸 평문으로
-            send_kakao_memo(tg_format.to_plain("\n\n".join(messages)))
+            send_kakao_memo(tg_format.to_plain("\n\n".join(messages)),
+                            vault_location_url(settings.get("obsidian", {}), archived.rel))
 
     # 9. 볼트 저장 실패는 조용히 넘기지 않는다 — 리포트는 이미 나갔지만 옵시디안엔
     #    아무것도 안 올라간 상태다. 텔레그램 경고 + 종료코드 1로 Actions를 빨갛게 만든다.
@@ -782,10 +783,7 @@ def _vault_alert(label: str, reason: str, us_context_problem: str = "") -> str:
     ]
     if us_context_problem:
         lines.append(f"· kr 리포트가 미장 컨텍스트 없이 생성됨: {us_context_problem}")
-    lines += [
-        "",
-        "조치: GH_PAT 재발급 → 3tv Actions의 vault-check 워크플로 수동 실행으로 확인",
-    ]
+    lines += ["", f"조치: {remediation(reason)}"]
     return "\n".join(lines)
 
 

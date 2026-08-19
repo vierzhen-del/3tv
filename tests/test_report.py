@@ -447,6 +447,108 @@ def test_fold_top_n_noop_when_within_limit():
     assert tg_format.FOLD_OPEN not in out
 
 
+def test_cap_news_head_moves_overflow_before_existing_rest():
+    """---기타--- 위 항목이 n개를 넘으면 코드가 강제로 자르고, 넘친 항목은
+    기존 ---기타--- 내용 앞에 끼워 넣는다(2026-08-18 "한국기사는 2개외 접기")."""
+    news = (
+        "• **삼성전자**: 274,500원 — 상승\n"
+        "  🔗 [기사1](https://n/1)\n"
+        "• **SK하이닉스**: 1,645,000원 — 상승\n"
+        "  🔗 [기사2](https://n/2)\n"
+        "• **나스닥지수**: 26,644.91 — 하락\n"
+        "  🔗 [기사3](https://n/3)\n"
+        "---기타---\n"
+        "• **인텔**: 약세\n"
+    )
+    out = report_mod._cap_news_head(news, 2)
+    head, _, rest = out.partition("---기타---")
+    assert "삼성전자" in head and "SK하이닉스" in head
+    assert "나스닥지수" not in head           # 3번째부터는 head에서 빠짐
+    assert "나스닥지수" in rest and "인텔" in rest   # 기존 기타 항목도 그대로 보존
+
+
+def test_cap_news_head_noop_within_limit():
+    news = "• **삼성전자**: 274,500원 — 상승\n• **SK하이닉스**: 1,645,000원 — 상승\n"
+    assert report_mod._cap_news_head(news, 2) == news
+
+
+def test_kr_news_capped_to_2_us_session_unaffected(tmp_path, monkeypatch):
+    """kr 세션은 종목기사 노출을 2개로 강제하고, us 세션은 그대로 둔다."""
+    news_body = """===TITLE===
+반도체급등
+===SIHWANG===
+1) 📌 요약
+• 나스닥 강세
+===NEWS===
+• **삼성전자**: 274,500원 📈 ▲2.43%
+  🔗 [기사1](https://n/1)
+• **SK하이닉스**: 1,645,000원 📈 ▲3.26%
+  🔗 [기사2](https://n/2)
+• **나스닥지수**: 26,644.91 📉 ▼0.32%
+  🔗 [기사3](https://n/3)
+• **마이크론**: 1,011.75 📈 ▲4.13%
+  🔗 [기사4](https://n/4)
+===HOLDINGS===
+===END==="""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: news_body)
+
+    kr_data = _generate(tmp_path, transcript="", session="kr")
+    kr_telegram = kr_data["reports"]["news_telegram"]
+    assert "삼성전자" in kr_telegram and "SK하이닉스" in kr_telegram
+    assert kr_telegram.index("SK하이닉스") < kr_telegram.index(tg_format.FOLD_OPEN)
+    assert "나스닥지수" in kr_telegram and "마이크론" in kr_telegram   # 접힌 채로 존재
+    # 저장(옵시디안 아카이브)용은 접지 않고 4종목 전부 그대로 남아야 한다
+    assert tg_format.FOLD_OPEN not in kr_data["reports"]["news"]
+    assert "마이크론" in kr_data["reports"]["news"]
+
+    us_data = _generate(tmp_path, transcript="", session="us")
+    us_telegram = us_data["reports"]["news_telegram"]
+    # us 세션은 캡을 적용하지 않으므로 ---기타--- 마커가 없는 이 응답은 그대로 노출
+    assert tg_format.FOLD_OPEN not in us_telegram
+    assert all(name in us_telegram for name in
+               ("삼성전자", "SK하이닉스", "나스닥지수", "마이크론"))
+
+
+def test_capture_rest_mark_folds_stocks_after_top_3(tmp_path, monkeypatch):
+    """3) 캡처화면 정리에서 종목이 4개를 넘으면 ---시세상세--- 마커 아래로 접힌다
+    (2026-08-11 실측: 국장 개별 종목 시세가 18종목까지 안 접힌 채 그대로 나갔다)."""
+    stocks = "\n".join(
+        f"**종목{i}**\n- 현재가 {i}00원, 전일대비 ▲{i}0원 (+{i}.00%) (방송 화면 기준)"
+        for i in range(1, 6)
+    )
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: f"""===TITLE===
+반도체급등
+===SIHWANG===
+1) 📌 요약
+• 나스닥 강세
+
+3) 🖼 8시 전후 캡처화면 정리
+**종목1**
+- 현재가 100원, 전일대비 ▲10원 (+1.00%) (방송 화면 기준)
+**종목2**
+- 현재가 200원, 전일대비 ▲20원 (+2.00%) (방송 화면 기준)
+**종목3**
+- 현재가 300원, 전일대비 ▲30원 (+3.00%) (방송 화면 기준)
+---시세상세---
+**종목4**
+- 현재가 400원, 전일대비 ▲40원 (+4.00%) (방송 화면 기준)
+**종목5**
+- 현재가 500원, 전일대비 ▲50원 (+5.00%) (방송 화면 기준)
+
+4) 💼 관심종목 업데이트
+- 삼성전자: 278,500원 📈 ▲1.64%
+===NEWS===
+===HOLDINGS===
+===END===""")
+    data = _generate(tmp_path, transcript="")
+    telegram = data["reports"]["sihwang"]
+    assert "종목1" in telegram and "종목2" in telegram and "종목3" in telegram
+    assert telegram.index("종목3") < telegram.index(tg_format.FOLD_OPEN)
+    assert "종목4" in telegram and "종목5" in telegram      # 접힌 채로 본문에 남아있음
+    assert "---시세상세---" not in telegram                 # 마커 자체는 치환돼 사라짐
+    assert "관심종목 업데이트" in telegram                   # 4번 섹션은 접기 밖에 그대로
+
+
 def test_daily_section_folds_after_top_3(tmp_path, monkeypatch):
     """===DAILY=== 텔레그램 전송본은 상위 3개만 노출되고 나머지는 접힌다(2026-08-09 요청).
 
@@ -920,6 +1022,21 @@ def test_kr_prompt_keeps_its_own_section_title(monkeypatch):
     monkeypatch.setattr(report_mod, "_call_llm", fake)
     _generate(Path(tempfile.mkdtemp()), session="kr", transcript="")
     assert "8시 전후 캡처화면 정리" in captured["p"]
+
+
+def test_prompt_asks_for_kospi_kosdaq_quote_line(monkeypatch):
+    """2026-08-18 실측: 종합 다이제스트가 국내 지수를 못 찾는 원인이 여기 있었다 —
+    2) 주요 지표 지시문이 미국 지표만 나열해 KOSPI/KOSDAQ이 리포트에 quote 형식으로
+    나온 적이 없었다(데이터는 있는데 출력 지시가 없었음)."""
+    captured = {}
+
+    def fake(models, prompt, max_tokens=8000):
+        captured["p"] = prompt
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(report_mod, "_call_llm", fake)
+    _generate(Path(tempfile.mkdtemp()), session="kr", transcript="")
+    assert "국내 지수: KOSPI / KOSDAQ" in captured["p"]
 
 
 # ── 2026-08-01 가독성 개편: 접기 마커 + 링크 정규화 ──

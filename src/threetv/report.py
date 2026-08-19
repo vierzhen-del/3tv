@@ -206,6 +206,7 @@ NEWS_REST_MARK = "---기타---"
 # 접는 구조 — LLM에게 `<<<FOLD:...>>>` 문법을 직접 시키면 형식이 자주 깨진다.
 FLOW_DETAIL_MARK = "---수급상세---"     # 개인·외국인·기관 요약 아래의 세부 주체/TOP10
 US_CTX_MARK = "---미장참고---"          # kr 리포트에 딸려오는 미국장 내용
+CAPTURE_REST_MARK = "---시세상세---"    # 캡처화면 정리(3번)에서 상위 3종목 외 나머지
 
 
 # 공용 프롬프트의 번호 섹션 헤딩("1) 📌 ...", "2) 💹 ..." 등) — `_fold_after`가
@@ -372,6 +373,32 @@ def _fold_news_rest(news_md: str) -> str:
     return f"{head.strip()}\n\n{tg_format.fold(title, rest)}"
 
 
+def _cap_news_head(news_md: str, n: int) -> str:
+    """`---기타---` 위(접기 밖, 노출) 항목을 최대 `n`개로 코드가 강제로 자른다.
+
+    kr 세션 종목기사(===NEWS===) 전용 — 미국 지수·종목이 별도 미국 세션
+    리포트와 중복 노출되지 않게 [주요종목] 자리를 한국 종목 2개로 제한하라고
+    프롬프트로 지시했지만, `_fold_top_n`과 같은 이유로 LLM의 준수 여부에
+    기대지 않는다(2026-08-18 요청: "한국기사는 2개외 접기"). 넘친 항목은
+    버리지 않고 `---기타---` 아래(기존 '기타' 항목 앞)로 옮긴다.
+    """
+    head, _, rest = news_md.partition(NEWS_REST_MARK)
+    items: list[list[str]] = []
+    for line in head.splitlines():
+        if _ITEM_START_RE.match(line):
+            items.append([line])
+        elif items:
+            items[-1].append(line)
+        # 첫 항목 전의 잡음(빈 줄 등)은 버린다 — _fold_top_n과 동일한 관례
+    if len(items) <= n:
+        return news_md
+    kept = "\n".join(chr(10).join(item) for item in items[:n])
+    overflow = "\n".join(chr(10).join(item) for item in items[n:])
+    rest = rest.strip()
+    merged_rest = f"{overflow}\n\n{rest}" if rest else overflow
+    return f"{kept}\n\n{NEWS_REST_MARK}\n{merged_rest}"
+
+
 # LLM이 프롬프트 지시를 무시하고 검색 결과 페이지 URL을 "기사"로 만들어낼 때의
 # 최후 안전장치 — 실제 기사가 아닌 검색 페이지 도메인/경로 패턴만 잡는다.
 _SEARCH_URL_RE = re.compile(
@@ -396,7 +423,7 @@ def _strip_search_links(md: str) -> str:
     return _SEARCH_URL_RE.sub(lambda m: m.group(1), md)
 
 
-def _parse_sections(text: str) -> dict:
+def _parse_sections(text: str, session: str = "") -> dict:
     """구분선 기반 리포트 응답 파싱 (JSON 대신 쓰는 이유는 아래).
 
     LLM에게 긴 마크다운을 JSON 문자열로 감싸 달라고 하면 구조가 계속 깨진다 —
@@ -429,6 +456,7 @@ def _parse_sections(text: str) -> dict:
     sihwang = _fold_after(sihwang, FLOW_DETAIL_MARK,
                           "수급 상세 (그외 주체 · TOP10 · ETF 등락)")
     sihwang = _fold_after(sihwang, US_CTX_MARK, "미국장 참고")
+    sihwang = _fold_after(sihwang, CAPTURE_REST_MARK, "그 외 종목 시세")
     sihwang = _fold_link_rows(sihwang)
 
     news_raw = sec.get("NEWS", "")
@@ -444,7 +472,12 @@ def _parse_sections(text: str) -> dict:
         news_archive += f"\n\n### 📰 데일리 주요 종목기사 정리\n{daily_raw}"
 
     # 텔레그램용 — 상위 항목만 보이고 나머지는 눌러서 펼치는 접기 블록으로.
-    news_telegram = _fold_news_rest(news_raw)
+    news_for_telegram = news_raw
+    if session == "kr":
+        # 미국 지수·종목이 별도 미국 세션 리포트와 중복 노출되지 않도록 노출
+        # 자리를 2개로 강제(archive는 건드리지 않음 — 위 news_archive 참고).
+        news_for_telegram = _cap_news_head(news_for_telegram, 2)
+    news_telegram = _fold_news_rest(news_for_telegram)
     if daily_raw:
         news_telegram += (f"\n\n### 📰 데일리 주요 종목기사 정리\n"
                           f"{_fold_top_n(daily_raw, 3, '그 외 이슈')}")
@@ -1304,6 +1337,10 @@ def generate_report(
 2) 💹 **주요 지표 전일대비 현황** — 종가 기준일은 섹션 제목에 한 번만
    (예: `주요 지표 (7/24 종가 기준)`). 순서는 방송 슬라이드와 1:1 대조되도록:
    - 3대 지수: 다우존스 / 나스닥 / S&P500
+   - **국내 지수: KOSPI / KOSDAQ** — [주요 지수/자산 검증 시세]에 있으면 반드시
+     이 줄에 포함하세요(다른 지수와 같은 형식: `KOSPI: 3,150.50 📉 ▼0.42%`).
+     빠뜨리면 안 됩니다 — 2번 섹션 밖(1번 국내장 전망 서술문)에만 언급하고
+     끝내지 마세요.
    - 지수선물: 나스닥100 선물 / S&P500 선물 / 다우 선물
    - 원자재·달러·환율: WTI / 달러인덱스 / 원-달러 / 위안-달러 / 엔-달러 / 금
    - 국채수익률: 10년물 / 2년물 / 3개월물 (커브 역전 여부 언급)
@@ -1340,6 +1377,9 @@ def generate_report(
      ③ `오늘 시황 전망 및 투자 대응`.
      특히 ②의 **수급 3행**(코스피/코스닥 개인·외국인·기관 순매수, 금투·투신 세부)은
      숫자 배치 자체가 정보이니 요약하지 말고 원문 그대로 옮기세요.
+   - **종목 블록(`**종목명**` 단위)이 4개를 넘으면** 상위 3개만 그대로 두고, 그
+     다음 줄에 `---시세상세---`를 단독으로 넣은 뒤 나머지 종목 블록을 이어서
+     쓰세요(코드가 이 마커 아래를 접습니다). 3개 이하면 마커 없이 그대로 두세요.
 
 4) 💼 **관심종목 업데이트** — 보유/관심 종목의 전일 종가·등락률 + 방송 언급 여부.
    ⚠️ **언급 여부는 이모지 하나로만 표시합니다 — 설명 문구를 쓰지 마세요.**
@@ -1385,6 +1425,7 @@ def generate_report(
 - ⚠️ **[주요종목] 목록에 있는 종목을 먼저** 쓰고, 다 쓴 뒤 `---기타---` 를 한 줄로 넣고
   그 아래에 나머지 종목을 쓰세요. `---기타---` 아래는 접기(펼치기) 블록이 되어
   눌러야 보입니다. 표식을 빠뜨리지 마세요.
+<<KR_NEWS_EXTRA>>
 - 겹치는 기사는 묶어 사안별 3줄 이내로 요약하세요.
 
 ### 리포트 ③ 데일리 주요 종목기사 정리 (===DAILY===)
@@ -1409,6 +1450,18 @@ def generate_report(
     if session == "us":
         common_order = common_order.replace(
             "8시 전후 캡처화면 정리", "미국장 캡처화면 정리")
+    # kr 세션의 ===NEWS===엔 미국 지수·종목이 섞여 나와 별도 미국 세션 리포트와
+    # 중복됐다(2026-08-18 실측: 나스닥지수·S&P500·마이크론·샌디스크가 삼성전자·
+    # SK하이닉스와 나란히 접기 없이 노출). 미국 항목은 ---기타---로 보내고,
+    # 노출(주요종목) 자리는 한국 종목 상위 2개로 제한한다. LLM이 이 개수 지시를
+    # 놓쳐도 _cap_news_head()가 코드로 다시 한번 2개로 강제한다.
+    kr_news_extra = (
+        "- ⚠️ **국장(kr) 전용**: 나스닥·S&P500 등 **미국 지수·미국 상장 종목은 이미 "
+        "별도 미국 세션 리포트에서 다뤘으므로 여기서는 [주요종목] 여부와 무관하게 "
+        "전부 `---기타---` 아래(접기)로 보내세요.** [주요종목] 자리(접기 밖)에는 "
+        "**한국 상장 종목만, 최대 2개**까지만 쓰세요."
+    ) if session == "kr" else ""
+    common_order = common_order.replace("<<KR_NEWS_EXTRA>>", kr_news_extra)
     session_goal = f"{session_focus}\n\n{common_order}"
 
     us_ctx = f"\n\n[오늘 미국 세션 리포트 (참고)]\n{us_context_md[:8000]}" if us_context_md else ""
@@ -1543,7 +1596,8 @@ JSON이 아닙니다. 따옴표 이스케이프도 필요 없고, 줄바꿈을 �
     try:
         # 33개 지표 + M7 표 + 6개 섹션을 요구하므로 출력 분량이 크다.
         # 12000으로는 사고 토큰까지 겹쳐 응답이 잘렸다(7/25 실측) → 넉넉하게 확보.
-        data = _parse_sections(_call_llm(settings["models"], prompt, max_tokens=40000))
+        data = _parse_sections(_call_llm(settings["models"], prompt, max_tokens=40000),
+                               session=session)
         for key in ("title_keyword", "markdown_report"):
             if not data.get(key):
                 raise RuntimeError(f"리포트 생성 결과에 {key} 누락")

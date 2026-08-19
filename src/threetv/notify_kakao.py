@@ -83,8 +83,13 @@ def _update_github_secret(name: str, value: str) -> None:
         log.warning("GitHub secret 자동 갱신 실패(%s) — 수동 갱신 필요", e)
 
 
-def send_kakao_memo(text: str) -> bool:
-    """나에게 보내기. 텍스트 템플릿은 200자 제한이 있어 앞부분 요약만 전송."""
+def send_kakao_memo(text: str, link_url: str = "") -> bool:
+    """나에게 보내기. 텍스트 템플릿은 200자 제한이 있어 앞부분 요약만 전송.
+
+    link_url: 메시지를 눌렀을 때 열리는 주소. 그날 리포트의 실제 저장 위치
+    (vault_location_url)를 넘기면 눌러서 전문을 볼 수 있다 — 안 넘기면(빈 문자열)
+    리포트와 무관한 채널 홈으로만 대체된다.
+    """
     try:
         access = _refresh_access_token()
         if not access:
@@ -92,9 +97,9 @@ def send_kakao_memo(text: str) -> bool:
 
         template = {
             "object_type": "text",
-            # 카카오 텍스트 템플릿 제한(200자) — 헤드라인만 싣고 상세는 텔레그램/옵시디안
+            # 카카오 텍스트 템플릿 제한(200자) — 헤드라인만 싣고 상세는 링크로
             "text": text[:190] + ("…" if len(text) > 190 else ""),
-            "link": {"web_url": "https://www.youtube.com/@3protv"},
+            "link": {"web_url": link_url or "https://www.youtube.com/@3protv"},
         }
         resp = requests.post(
             MEMO_URL,
