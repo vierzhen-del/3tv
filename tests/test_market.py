@@ -314,6 +314,26 @@ def test_stale_asof_gets_flagged(monkeypatch):
     assert "stale" not in by["^DJI"] and "stale" not in by["^IXIC"]
 
 
+def test_kospi_kosdaq_never_marked_stale(monkeypatch):
+    """2026-08-21 사용자 확정 — KOSPI/KOSDAQ은 us/kr 세션이 한국장 개장 전에
+    도는 구조상 매일 전날 종가일 수밖에 없다. "타지수처럼" 날짜 경고 없이
+    보여달라는 요청 — stale 표기 대상에서 뺀다. KOSPI200은 그대로 감시 대상."""
+    def fake_batch(cfg):
+        out = []
+        for t, n in cfg.items():
+            asof = "2026-07-23" if t in ("^KS11", "^KQ11", "^KS200") else "2026-07-24"
+            out.append(market._fmt_quote(n, t, "US", 100.0, 1.0, asof, 99.0))
+        return out
+    monkeypatch.setattr(market, "us_quotes_batch", fake_batch)
+    quotes = market.fetch_indices({
+        "^DJI": "다우존스", "^IXIC": "나스닥",
+        "^KS11": "KOSPI", "^KQ11": "KOSDAQ", "^KS200": "KOSPI200",
+    })
+    by = {q["ticker"]: q for q in quotes}
+    assert "stale" not in by["^KS11"] and "stale" not in by["^KQ11"]
+    assert by["^KS200"].get("stale") is True
+
+
 def test_newer_asof_not_marked_stale(monkeypatch):
     """대표보다 최신인 항목(환율 등)은 stale이 아니다."""
     def fake_batch(cfg):
