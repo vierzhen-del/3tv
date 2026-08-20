@@ -1039,6 +1039,19 @@ def test_prompt_asks_for_kospi_kosdaq_quote_line(monkeypatch):
     assert "국내 지수: KOSPI / KOSDAQ" in captured["p"]
 
 
+def test_prompt_asks_for_30y_treasury(monkeypatch):
+    """2026-08-21 요청 — 국채수익률에 30년물 추가."""
+    captured = {}
+
+    def fake(models, prompt, max_tokens=8000):
+        captured["p"] = prompt
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(report_mod, "_call_llm", fake)
+    _generate(Path(tempfile.mkdtemp()), session="kr", transcript="")
+    assert "30년물" in captured["p"]
+
+
 # ── 2026-08-01 가독성 개편: 접기 마커 + 링크 정규화 ──
 
 def test_flow_detail_mark_gets_folded():
