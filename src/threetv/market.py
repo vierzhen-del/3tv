@@ -75,8 +75,16 @@ def _pair_from_closes(closes) -> tuple[float, float, str] | None:
     return close, prev, asof
 
 
+# settings.yaml의 market.indices엔 국내 지수도 yfinance 티커로 섞여 있다
+# (KOSPI/KOSDAQ은 pykrx가 아니라 Yahoo `^KS11`/`^KQ11`로 조회) — 이 배치 함수가
+# 전부 "US"로 찍으면 정오(noon) 세션의 `market == "KR"` 필터가 KOSPI/KOSDAQ을
+# 영영 못 찾는다(2026-08-20 실측: "장중 KR 지수: 조회 실패"가 매일 재현 —
+# 조회 자체는 35/36건 성공했는데 market 태그가 전부 US라 필터에서 다 걸러졌다).
+_KR_INDEX_TICKERS = {"^KS11", "^KQ11", "^KS200"}
+
+
 def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
-    """미국 티커 여러 개를 **한 번의 요청**으로 조회.
+    """미국(+ Yahoo 티커로 조회하는 국내 지수) 여러 개를 **한 번의 요청**으로 조회.
 
     티커마다 개별 요청을 보내면(33개) Yahoo가 공유 CI IP를 스로틀링해 NaN만
     돌려주는 일이 잦다 — 2026-07-25 실측 실패 원인. yf.download 배치 호출은
@@ -111,7 +119,8 @@ def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
             missing.append(sym)
             continue
         close, prev, asof = pair
-        q = _fmt_quote(tickers[sym], sym, "US", close, (close - prev) / prev * 100,
+        market = "KR" if sym in _KR_INDEX_TICKERS else "US"
+        q = _fmt_quote(tickers[sym], sym, market, close, (close - prev) / prev * 100,
                        asof, prev)
         if q:
             quotes.append(q)
@@ -130,7 +139,12 @@ def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
 
 
 def us_quote(ticker: str, name: str | None = None) -> dict | None:
-    """미국 종목/지수의 최근 종가와 전일 대비 등락률 (개별 조회)."""
+    """Yahoo 티커 종목/지수의 최근 종가와 전일 대비 등락률 (개별 조회).
+
+    이름과 달리 미국 전용이 아니다 — us_quotes_batch()가 배치 실패분을 재시도할
+    때도 이 함수를 쓰는데, KOSPI/KOSDAQ도 그 배치에 섞여 있다. market 태그를
+    US로 고정하면 배치가 실패한 날만 국내 지수가 US로 잘못 찍힌다.
+    """
     import yfinance as yf
 
     try:
@@ -142,7 +156,8 @@ def us_quote(ticker: str, name: str | None = None) -> dict | None:
             log.debug("yfinance 유효 종가 부족 %s", ticker)
             return None
         close, prev, asof = pair
-        return _fmt_quote(name or ticker, ticker, "US", close,
+        market = "KR" if ticker in _KR_INDEX_TICKERS else "US"
+        return _fmt_quote(name or ticker, ticker, market, close,
                           (close - prev) / prev * 100, asof, prev)
     except Exception as e:
         log.debug("yfinance 조회 실패 %s: %s", ticker, e)

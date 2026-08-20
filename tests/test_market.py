@@ -139,6 +139,53 @@ def test_batch_handles_single_ticker_flat_columns(monkeypatch):
     assert len(quotes) == 1 and quotes[0]["close"] == 101.0
 
 
+def test_batch_tags_kospi_kosdaq_as_kr_not_us(monkeypatch):
+    """2026-08-20 실측: KOSPI/KOSDAQ이 Yahoo 배치로 조회는 성공하는데 market이
+    전부 "US"로 찍혀 noon 세션의 `market == "KR"` 필터에서 다 걸러졌다
+    ("장중 KR 지수: 조회 실패"가 매일 재현). 국내 지수 티커는 KR로 찍혀야 한다."""
+    df = _multi_df({
+        "^IXIC": [19878.0, 20123.45],
+        "^KS11": [3140.0, 3150.5],
+        "^KQ11": [770.0, 780.2],
+    })
+    monkeypatch.setattr(market, "us_quote", lambda *a, **k: None)
+    import yfinance as yf
+    monkeypatch.setattr(yf, "download", lambda *a, **k: df)
+
+    quotes = market.fetch_indices(
+        {"^IXIC": "나스닥", "^KS11": "KOSPI", "^KQ11": "KOSDAQ"})
+    by_ticker = {q["ticker"]: q for q in quotes}
+    assert by_ticker["^IXIC"]["market"] == "US"
+    assert by_ticker["^KS11"]["market"] == "KR"
+    assert by_ticker["^KQ11"]["market"] == "KR"
+
+
+def test_individual_retry_also_tags_kospi_as_kr(monkeypatch):
+    """배치가 실패해 us_quote() 개별 재시도로 넘어간 경우도 동일하게 KR로 찍혀야 한다."""
+    import yfinance as yf
+
+    class FakeHist:
+        def __getitem__(self, k):
+            return pd.Series([3140.0, 3150.5], index=_idx(2))
+
+        def __len__(self):
+            return 2
+
+    class FakeTicker:
+        def __init__(self, *a, **k):
+            pass
+
+        def history(self, *a, **k):
+            return FakeHist()
+
+    monkeypatch.setattr(yf, "download", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("rate limited")))
+    monkeypatch.setattr(yf, "Ticker", FakeTicker)
+
+    quotes = market.fetch_indices({"^KS11": "KOSPI"})
+    assert len(quotes) == 1 and quotes[0]["market"] == "KR"
+
+
 # ─────────────────── pykrx import 실패 방어 ───────────────────
 
 def test_pykrx_import_failure_returns_none_not_raise(monkeypatch):
