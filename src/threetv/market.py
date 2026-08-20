@@ -26,6 +26,10 @@ def _fmt_quote(
     if not (math.isfinite(close) and math.isfinite(pct)):
         log.warning("시세 값이 NaN/inf → 제외: %s (%s)", name, ticker)
         return None
+    # direction/icon은 반올림된 change_pct 기준으로 정한다 — 원본 pct(예: -0.004%)로
+    # 판정하면 화면엔 반올림된 "0.00%"가 찍히는데 아이콘·화살표는 하락(📉▼)으로
+    # 나가 서로 모순된다(2026-08-20 실측: 2년물 국채수익률).
+    rounded_pct = round(pct, 2)
     return {
         "name": name,
         "ticker": ticker,
@@ -33,10 +37,10 @@ def _fmt_quote(
         "close": round(close, 2),
         "prev_close": round(prev_close, 2)
         if prev_close is not None and math.isfinite(prev_close) else None,
-        "change_pct": round(pct, 2),
-        "direction": "▲" if pct > 0 else ("▼" if pct < 0 else "-"),
+        "change_pct": rounded_pct,
+        "direction": "▲" if rounded_pct > 0 else ("▼" if rounded_pct < 0 else "-"),
         # 한눈에 등락을 보기 위한 아이콘 (텔레그램 가독성)
-        "icon": "📈" if pct > 0 else ("📉" if pct < 0 else "➖"),
+        "icon": "📈" if rounded_pct > 0 else ("📉" if rounded_pct < 0 else "➖"),
         "asof": asof,      # 종가 기준일 (YYYY-MM-DD)
     }
 

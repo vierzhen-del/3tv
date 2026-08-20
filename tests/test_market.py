@@ -30,6 +30,15 @@ def test_fmt_quote_accepts_valid():
     assert q["direction"] == "▲" and q["asof"] == "2026-07-24"
 
 
+def test_fmt_quote_icon_matches_rounded_pct_not_raw():
+    """2026-08-20 실측: 2년물 국채수익률이 원본 -0.004%(하락)였는데 반올림하면
+    0.00%라 화면엔 '0.00%'가 찍히면서 아이콘·화살표는 하락(📉▼)으로 나가
+    모순됐다. direction/icon은 반올림된 change_pct 기준으로 판정해야 한다."""
+    q = market._fmt_quote("2년물", "2YY=F", "US", 100.0, -0.004, "2026-08-20", 100.004)
+    assert q["change_pct"] == -0.0 or q["change_pct"] == 0.0   # 반올림하면 0
+    assert q["direction"] == "-" and q["icon"] == "➖"
+
+
 def test_pair_from_closes_drops_trailing_nan():
     """마지막 행이 NaN이면 그 값을 종가로 쓰면 안 된다 (실장애의 직접 원인)."""
     s = pd.Series([100.0, 110.0, np.nan], index=_idx(3))
