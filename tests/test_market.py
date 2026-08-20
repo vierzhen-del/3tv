@@ -30,6 +30,15 @@ def test_fmt_quote_accepts_valid():
     assert q["direction"] == "▲" and q["asof"] == "2026-07-24"
 
 
+def test_fmt_quote_icon_matches_rounded_pct_not_raw():
+    """2026-08-20 실측: 2년물 국채수익률이 원본 -0.004%(하락)였는데 반올림하면
+    0.00%라 화면엔 '0.00%'가 찍히면서 아이콘·화살표는 하락(📉▼)으로 나가
+    모순됐다. direction/icon은 반올림된 change_pct 기준으로 판정해야 한다."""
+    q = market._fmt_quote("2년물", "2YY=F", "US", 100.0, -0.004, "2026-08-20", 100.004)
+    assert q["change_pct"] == -0.0 or q["change_pct"] == 0.0   # 반올림하면 0
+    assert q["direction"] == "-" and q["icon"] == "➖"
+
+
 def test_pair_from_closes_drops_trailing_nan():
     """마지막 행이 NaN이면 그 값을 종가로 쓰면 안 된다 (실장애의 직접 원인)."""
     s = pd.Series([100.0, 110.0, np.nan], index=_idx(3))
@@ -312,6 +321,26 @@ def test_stale_asof_gets_flagged(monkeypatch):
     by = {q["ticker"]: q for q in quotes}
     assert by["^KS200"].get("stale") is True
     assert "stale" not in by["^DJI"] and "stale" not in by["^IXIC"]
+
+
+def test_kospi_kosdaq_never_marked_stale(monkeypatch):
+    """2026-08-21 사용자 확정 — KOSPI/KOSDAQ은 us/kr 세션이 한국장 개장 전에
+    도는 구조상 매일 전날 종가일 수밖에 없다. "타지수처럼" 날짜 경고 없이
+    보여달라는 요청 — stale 표기 대상에서 뺀다. KOSPI200은 그대로 감시 대상."""
+    def fake_batch(cfg):
+        out = []
+        for t, n in cfg.items():
+            asof = "2026-07-23" if t in ("^KS11", "^KQ11", "^KS200") else "2026-07-24"
+            out.append(market._fmt_quote(n, t, "US", 100.0, 1.0, asof, 99.0))
+        return out
+    monkeypatch.setattr(market, "us_quotes_batch", fake_batch)
+    quotes = market.fetch_indices({
+        "^DJI": "다우존스", "^IXIC": "나스닥",
+        "^KS11": "KOSPI", "^KQ11": "KOSDAQ", "^KS200": "KOSPI200",
+    })
+    by = {q["ticker"]: q for q in quotes}
+    assert "stale" not in by["^KS11"] and "stale" not in by["^KQ11"]
+    assert by["^KS200"].get("stale") is True
 
 
 def test_newer_asof_not_marked_stale(monkeypatch):
