@@ -20,6 +20,7 @@
 | 22:00~05:00 | `night` 슬롯 8회 | 오선의 미국 증시 라이브 — 매시 정각 5분씩 캡처해 볼트에 저장(리포트·발송 없음) |
 | 06:00 | `night` 종합·전송 | 8슬롯을 모아 지수 변동 궤적 + 주요 이벤트 리포트 1건 |
 | 09:30 | `etf` 전송 | 액티브 ETF 4종의 전일 대비 구성 변화 (KRX 공시 PDF) → 별도 메시지 1건 |
+| 18:00 | 종합 다이제스트 | 그날 발행된 리포트(오늘/정오/야간/ETF)를 모아 주요 지표(지수·환율·국채수익률·VIX)·수급·오늘 흐름 요약 1건으로 재발송. GitHub Actions가 아니라 **S9의 n8n**이 담당 — `docs/n8n_daily_digest.md` 참고 |
 
 `noon`/`night`은 2026-07-28 추가됐고 채널이 3protv와 달라 `sessions.<name>.live_url`로
 지정합니다. `night`은 GitHub Actions 단일 job이 최대 6시간이라 22:00~06:00(8h) 연속
@@ -172,6 +173,8 @@ GitHub Actions ──push──▶ 3tv-reports repo (private, 중계용)
 4. S9의 n8n에 동기화 워크플로 등록 — **`docs/n8n_s9_sync.md` 가이드 참고** (`docs/n8n_3tv_sync_workflow.json` import 가능)
 5. 리포트는 `3protv/YYYY/MM/3protv오늘_YYYYMMDD_키워드.md`로 저장되며 frontmatter(날짜/태그/언급종목)가 있어 Dataview 검색이 가능합니다
 6. write 충돌 규칙: n8n의 3tv 워크플로는 볼트 내 `3protv/` 폴더에만 쓰기 (기존 n8n `00_Inbox/` 규칙과 병행 — 새 파일 생성만이라 Syncthing 충돌 없음)
+7. (선택) 평일 18:00 종합 다이제스트를 텔레그램으로 추가로 받고 싶으면 이 동기화 다음 단계로
+   **`docs/n8n_daily_digest.md` 가이드**(`docs/n8n_daily_digest_workflow.json` import) 참고
 
 ### 5. 카카오 나에게 보내기 (선택)
 
