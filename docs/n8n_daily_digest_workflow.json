@@ -156,11 +156,56 @@
       "typeVersion": 1,
       "position": [
         1480,
-        20
+        -140
       ],
       "parameters": {
         "operation": "write",
         "fileName": "={{ \"/root/obsidian/3protv/\" + $json.ymd.slice(0,4) + \"/\" + $json.ymd.slice(4,6) + \"/3protv다이제스트_\" + $json.ymd + \".md\" }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "read-index",
+      "name": "인덱스 읽기",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1480,
+        60
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ \"/root/obsidian/3protv/\" + $('오늘 경로 계산').first().json.yyyy + \"/\" + $('오늘 경로 계산').first().json.mm + \"/_index.md\" }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "update-index",
+      "name": "인덱스 갱신",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// 2026-08-21 사용자 지적으로 발견: 로컬 옵시디안 볼트(S9)는 3tv-reports\n// GitHub의 _index.md를 절대 동기화받지 않는다 — n8n_3tv_sync_workflow.json의\n// \"오늘 파일 필터\"가 파일명에 오늘 날짜(YYYYMMDD)가 없는 파일은 애초에\n// 내려받지 않는데(그 워크플로 자체는 오늘/정오/야간/기사/ETF처럼 날짜가\n// 박힌 파일만 겨냥해 만들어졌다), _index.md는 매번 이 필터에 걸러진다.\n// Python 쪽 _rebuild_month_index()가 아무리 최신 인덱스를 3tv-reports에\n// 밀어 넣어도 로컬엔 절대 반영되지 않는다는 뜻 — 다이제스트만의 문제가\n// 아니라 원래부터 있던 구멍이었다. 그래서 다이제스트를 인덱스에 넣으려면\n// 그 Python 로직에 기대지 않고 이 로컬 파일을 직접 고쳐야 한다.\n//\n// ⚠️ 이 결과로, 로컬 _index.md는 이 노드가 다이제스트 한 줄만 추가한\n// \"패치본\"이고 3tv-reports의 \"정식 본\"과 서서히 벌어질 수 있다(정식 본이\n// 재생성되며 이 패치를 덮어쓸 방법이 로컬엔 없다). 근본적으로 고치려면\n// 동기화 워크플로 자체(파일명 필터)를 손봐야 하는데, 그건 GitHub 쓰기\n// 권한이 있는 별도 PAT가 필요한 더 큰 작업이라 사용자가 이번엔 이 로컬\n// 패치만 선택했다(2026-08-21).\nconst { ymd, dateLabel } = $('요약 파싱').first().json;\nconst { yyyy, mm } = $('오늘 경로 계산').first().json;\n\nconst label = '종합다이제스트';\nconst stem = `3protv다이제스트_${ymd}`;\nconst entry = `[[${stem}|${label}]]`;\n\nconst WEEKDAY_KO = '월화수목금토일';\n// 날짜 문자열의 연/월/일 숫자만으로 요일을 구한다 — +09:00 오프셋을 붙여\n// Date를 만들면 자정 KST가 전날 UTC 15시가 되어 getUTCDay()가 하루 전\n// 요일을 돌려주는 버그가 났다(2026-08-21 실측: 8/21 금요일을 목요일로\n// 계산해, 기존 \"2026-08-21 (금)\" 줄을 못 찾고 \"(목)\" 줄을 새로 만들어\n// 중복 삽입했다). Date.UTC(y, m-1, d)로 그 날짜의 UTC 자정을 직접 만들면\n// 오프셋 계산이 필요 없어 서버 타임존과 무관하게 항상 맞는다.\nconst [dY, dM, dD] = dateLabel.split('-').map(Number);\nconst dow = WEEKDAY_KO[(new Date(Date.UTC(dY, dM - 1, dD)).getUTCDay() + 6) % 7];\nconst dateHeading = `- **${dateLabel} (${dow})**`;\n\nconst items = $input.all();\nconst bin = items[0] && items[0].binary && items[0].binary.data;\n\nlet content;\nif (bin) {\n  content = Buffer.from(bin.data, 'base64').toString('utf-8');\n} else {\n  // 이 달 첫 리포트가 다이제스트보다 먼저 온 적이 없어 인덱스 파일 자체가\n  // 아직 없는 드문 경우 — 최소 골격만 새로 만든다.\n  content = `---\\n`\n    + `tags: [3protv, index, \"3protv/${yyyy}\", \"3protv/${yyyy}-${mm}\"]\\n`\n    + `---\\n`\n    + `# ${yyyy}년 ${mm}월 3protv 인덱스\\n\\n`\n    + `일자별 시황 리포트 모음 — 검색/Dataview 참조용.\\n`;\n}\n\nconst lines = content.split('\\n');\nconst idx = lines.findIndex(l => l.startsWith(dateHeading));\nif (idx === -1) {\n  lines.push(`${dateHeading}: ${entry}`);\n} else if (!lines[idx].includes(entry)) {\n  // 재실행 등으로 이미 들어가 있으면 중복 삽입하지 않는다\n  lines[idx] = lines[idx].replace(/\\s+$/, '') + ` · ${entry}`;\n}\n\nconst newContent = lines.join('\\n');\nreturn [{\n  json: {},\n  binary: {\n    data: {\n      data: Buffer.from(newContent, 'utf-8').toString('base64'),\n      mimeType: 'text/markdown',\n      fileName: '_index.md',\n    },\n  },\n}];"
+      }
+    },
+    {
+      "id": "write-index",
+      "name": "인덱스 쓰기",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1880,
+        60
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ \"/root/obsidian/3protv/\" + $('오늘 경로 계산').first().json.yyyy + \"/\" + $('오늘 경로 계산').first().json.mm + \"/_index.md\" }}",
         "options": {}
       }
     },
@@ -171,7 +216,7 @@
       "typeVersion": 2,
       "position": [
         1480,
-        180
+        260
       ],
       "parameters": {
         "jsCode": "// \"요약 파싱\"이 파일 저장 노드와 출력을 공유하려고 아이템 1개만 반환하므로\n// (이유는 그 노드 주석 참고), 텔레그램 발송 직전인 여기서 chat_id 수만큼\n// 아이템을 나눈다. 로직 자체는 이전 \"요약 파싱\" 노드 끝부분과 동일 — 다음\n// 노드(텔레그램 발송)가 아이템 수만큼 자동으로 반복 호출된다.\nconst { message, chatIds } = $json;\nreturn chatIds.map(id => ({ json: { text: message, chat_id: id } }));"
@@ -184,7 +229,7 @@
       "typeVersion": 4.2,
       "position": [
         1880,
-        180
+        260
       ],
       "parameters": {
         "method": "POST",
@@ -282,6 +327,11 @@
             "node": "채팅방별 분리",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "인덱스 읽기",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -291,6 +341,28 @@
         [
           {
             "node": "텔레그램 발송",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "인덱스 읽기": {
+      "main": [
+        [
+          {
+            "node": "인덱스 갱신",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "인덱스 갱신": {
+      "main": [
+        [
+          {
+            "node": "인덱스 쓰기",
             "type": "main",
             "index": 0
           }
