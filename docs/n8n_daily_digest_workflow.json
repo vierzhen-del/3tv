@@ -146,7 +146,35 @@
         100
       ],
       "parameters": {
-        "jsCode": "// Gemini 실패(429 할당량 소진 등)도 조용히 죽지 않고 텔레그램으로 알린다\n// (2026-07-27 GH_PAT 침묵 실패 사고 재발 방지 원칙과 동일선상)\nconst res = $json;\nconst built = $('다이제스트용 본문 구성').first().json;\nconst { yyyy, mm } = $('오늘 경로 계산').first().json;\nconst candidate = res.candidates && res.candidates[0];\nconst text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0]\n  ? candidate.content.parts[0].text.trim()\n  : null;\n\n// 지수·수급은 Gemini와 무관하게 코드로 이미 추출돼 있다 — Gemini가 실패해도\n// 이 두 섹션은 그대로 살아서 나간다(2026-08-13: 숫자 데이터는 요약 실패와\n// 별개로 최대한 전달하자는 원칙).\nconst dataBlock = `📊 주요 지표 (전일 대비)\\n${built.indexSectionText}\\n\\n`\n  + `💰 수급 동향 (개인/외국인/기관, 전일대비 · 억원)\\n${built.flowSectionText}\\n\\n`;\n\nlet message;\nif (text) {\n  message = `📋 3프로TV 오늘의 종합 다이제스트 (${built.dateLabel})\\n\\n${dataBlock}${text}\\n\\n`\n    + `— 오늘 발행된 리포트 ${built.count}건 종합 (원문: 옵시디안 3protv/${yyyy}/${mm}/)`;\n} else {\n  message = `⚠️ 오늘(${built.dateLabel}) 다이제스트 요약 생성 실패 (Gemini 응답 이상 — 할당량 소진 가능성)\\n`\n    + `개별 리포트 ${built.count}건은 정상 저장됐습니다 — 옵시디안에서 직접 확인해주세요.\\n\\n${dataBlock}`;\n}\n\n// 텔레그램 chat_id는 콤마로 합쳐서 한 번에 못 보낸다(2026-08-13 사고 —\n// Bot API는 요청 1회당 chat_id 1개만 받는다). 방마다 아이템을 나눠 반환하면\n// 다음 노드(텔레그램 발송)가 아이템 수만큼 자동으로 반복 호출된다.\nconst chatIds = [\"<N8N_TELEGRAM_CHAT_ID_1>\", \"<N8N_TELEGRAM_CHAT_ID_2>\"];\nreturn chatIds.map(id => ({ json: { text: message, chat_id: id } }));"
+        "jsCode": "// Gemini 실패(429 할당량 소진 등)도 조용히 죽지 않고 텔레그램으로 알린다\n// (2026-07-27 GH_PAT 침묵 실패 사고 재발 방지 원칙과 동일선상)\nconst res = $json;\nconst built = $('다이제스트용 본문 구성').first().json;\nconst { yyyy, mm, ymd } = $('오늘 경로 계산').first().json;\nconst candidate = res.candidates && res.candidates[0];\nconst text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0]\n  ? candidate.content.parts[0].text.trim()\n  : null;\n\n// 지수·수급은 Gemini와 무관하게 코드로 이미 추출돼 있다 — Gemini가 실패해도\n// 이 두 섹션은 그대로 살아서 나간다(2026-08-13: 숫자 데이터는 요약 실패와\n// 별개로 최대한 전달하자는 원칙).\nconst dataBlock = `📊 주요 지표 (전일 대비)\\n${built.indexSectionText}\\n\\n`\n  + `💰 수급 동향 (개인/외국인/기관, 전일대비 · 억원)\\n${built.flowSectionText}\\n\\n`;\n\nlet message;\nif (text) {\n  message = `📋 3프로TV 오늘의 종합 다이제스트 (${built.dateLabel})\\n\\n${dataBlock}${text}\\n\\n`\n    + `— 오늘 발행된 리포트 ${built.count}건 종합 (원문: 옵시디안 3protv/${yyyy}/${mm}/)`;\n} else {\n  message = `⚠️ 오늘(${built.dateLabel}) 다이제스트 요약 생성 실패 (Gemini 응답 이상 — 할당량 소진 가능성)\\n`\n    + `개별 리포트 ${built.count}건은 정상 저장됐습니다 — 옵시디안에서 직접 확인해주세요.\\n\\n${dataBlock}`;\n}\n\n// 2026-08-21 추가(사용자 요청): 지금까지 다이제스트는 텔레그램 전용이라 옵시디안에\n// 흔적이 안 남았다 — 원본 리포트 4건만 볼트에 남고 요약 자체는 검색·재확인이 안\n// 됐다. 다른 3tv 노트와 같은 경로에 노트로 저장해 같은 방식으로 검색·MOC 인덱싱\n// 대상이 되게 한다. 파일명은 다른 세션과 같은 `{prefix}_{ymd}` 규칙을 따른다 —\n// 저장소 obsidian_archive.py의 `_DAY_LABELS`에도 \"3protv다이제스트\" 항목을 같이\n// 추가해야 인덱스에 \"종합다이제스트\"로 라벨링된다(같은 커밋에 반영).\nconst vaultNote = `---\\n`\n  + `date: ${built.dateLabel}\\n`\n  + `year: ${yyyy}\\n`\n  + `month: \"${yyyy}-${mm}\"\\n`\n  + `session: 종합다이제스트\\n`\n  + `tags: [3protv, 종합다이제스트, \"3protv/${yyyy}\", \"3protv/${yyyy}-${mm}\"]\\n`\n  + `---\\n`\n  + `# 3protv다이제스트_${ymd}\\n\\n`\n  + message + `\\n`;\n\n// 텔레그램 chat_id는 콤마로 합쳐서 한 번에 못 보낸다(2026-08-13 사고 — Bot API는\n// 요청 1회당 chat_id 1개만 받는다). 예전엔 여기서 바로 chat_id 수만큼 아이템을\n// 나눴지만, 이 노드 출력이 이제 \"다이제스트 파일 저장\" 노드와도 병렬로 연결돼\n// 있어(같은 출력이 두 갈래에 각각 그대로 전달됨) 여기서 미리 나누면 파일 저장\n// 쪽에 chat_id 수만큼 중복 저장된다. 그래서 분리는 다음 노드(\"채팅방별 분리\")로\n// 미루고, 이 노드는 아이템 1개(+ 저장할 binary)만 반환한다.\nconst chatIds = [\"<N8N_TELEGRAM_CHAT_ID_1>\", \"<N8N_TELEGRAM_CHAT_ID_2>\"];\n\nreturn [{\n  json: { message, chatIds, ymd, dateLabel: built.dateLabel },\n  binary: {\n    data: {\n      data: Buffer.from(vaultNote, 'utf-8').toString('base64'),\n      mimeType: 'text/markdown',\n      fileName: `3protv다이제스트_${ymd}.md`,\n    },\n  },\n}];"
+      }
+    },
+    {
+      "id": "save-vault",
+      "name": "다이제스트 파일 저장",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1480,
+        20
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ \"/root/obsidian/3protv/\" + $json.ymd.slice(0,4) + \"/\" + $json.ymd.slice(4,6) + \"/3protv다이제스트_\" + $json.ymd + \".md\" }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "split-chats",
+      "name": "채팅방별 분리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        180
+      ],
+      "parameters": {
+        "jsCode": "// \"요약 파싱\"이 파일 저장 노드와 출력을 공유하려고 아이템 1개만 반환하므로\n// (이유는 그 노드 주석 참고), 텔레그램 발송 직전인 여기서 chat_id 수만큼\n// 아이템을 나눈다. 로직 자체는 이전 \"요약 파싱\" 노드 끝부분과 동일 — 다음\n// 노드(텔레그램 발송)가 아이템 수만큼 자동으로 반복 호출된다.\nconst { message, chatIds } = $json;\nreturn chatIds.map(id => ({ json: { text: message, chat_id: id } }));"
       }
     },
     {
@@ -155,8 +183,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1480,
-        100
+        1880,
+        180
       ],
       "parameters": {
         "method": "POST",
@@ -243,6 +271,22 @@
       ]
     },
     "요약 파싱": {
+      "main": [
+        [
+          {
+            "node": "다이제스트 파일 저장",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "채팅방별 분리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "채팅방별 분리": {
       "main": [
         [
           {
