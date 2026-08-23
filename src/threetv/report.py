@@ -339,11 +339,14 @@ def _fold_news_rest(news_md: str) -> str:
 def _cap_news_head(news_md: str, n: int) -> str:
     """`---기타---` 위(접기 밖, 노출) 항목을 최대 `n`개로 코드가 강제로 자른다.
 
-    kr 세션 종목기사(===NEWS===) 전용 — 미국 지수·종목이 별도 미국 세션
-    리포트와 중복 노출되지 않게 [주요종목] 자리를 한국 종목 2개로 제한하라고
-    프롬프트로 지시했지만, `_fold_top_n`과 같은 이유로 LLM의 준수 여부에
-    기대지 않는다(2026-08-18 요청: "한국기사는 2개외 접기"). 넘친 항목은
-    버리지 않고 `---기타---` 아래(기존 '기타' 항목 앞)로 옮긴다.
+    us/kr 세션 종목기사(===NEWS===) 전용, 세션별로 `n`이 다르다(us=5, kr=2 —
+    호출부인 `_parse_sections` 참고). kr은 미국 지수·종목이 별도 미국 세션
+    리포트와 중복 노출되지 않게 [주요종목] 자리를 2개로 제한하라고 프롬프트로
+    지시했지만, `_fold_top_n`과 같은 이유로 LLM의 준수 여부에 기대지 않는다
+    (2026-08-18 요청: "한국기사는 2개외 접기"). us는 원본 출처라 중복 회피
+    목적은 없고 단순히 리포트가 길어 가독성 때문에 5개로 제한한다(2026-08-24
+    요청). 넘친 항목은 버리지 않고 `---기타---` 아래(기존 '기타' 항목 앞)로
+    옮긴다.
     """
     head, _, rest = news_md.partition(NEWS_REST_MARK)
     items: list[list[str]] = []
@@ -432,6 +435,12 @@ def _parse_sections(text: str, session: str = "") -> dict:
         # 미국 지수·종목이 별도 미국 세션 리포트와 중복 노출되지 않도록 노출
         # 자리를 2개로 강제(archive는 건드리지 않음 — 위 news_archive 참고).
         news_for_telegram = _cap_news_head(news_for_telegram, 2)
+    elif session == "us":
+        # 2026-08-24 사용자 요청: us 세션 종목기사도 너무 길어 상위 5개만
+        # 노출하고 나머지는 접기로. kr(2개)보다 넉넉한 건 kr과 달리 여기가
+        # 그 종목들의 원본 출처라 중복 회피 목적이 아니라 단순 가독성용이기
+        # 때문(archive는 건드리지 않음 — 위 news_archive 참고).
+        news_for_telegram = _cap_news_head(news_for_telegram, 5)
     news_telegram = _fold_news_rest(news_for_telegram)
     if daily_raw:
         news_telegram += (f"\n\n### 📰 데일리 주요 종목기사 정리\n"

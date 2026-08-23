@@ -472,8 +472,8 @@ def test_cap_news_head_noop_within_limit():
     assert report_mod._cap_news_head(news, 2) == news
 
 
-def test_kr_news_capped_to_2_us_session_unaffected(tmp_path, monkeypatch):
-    """kr 세션은 종목기사 노출을 2개로 강제하고, us 세션은 그대로 둔다."""
+def test_kr_news_capped_to_2(tmp_path, monkeypatch):
+    """kr 세션은 종목기사 노출을 2개로 강제한다."""
     news_body = """===TITLE===
 반도체급등
 ===SIHWANG===
@@ -501,12 +501,57 @@ def test_kr_news_capped_to_2_us_session_unaffected(tmp_path, monkeypatch):
     assert tg_format.FOLD_OPEN not in kr_data["reports"]["news"]
     assert "마이크론" in kr_data["reports"]["news"]
 
+
+def test_us_news_capped_to_5(tmp_path, monkeypatch):
+    """2026-08-24 요청: us 세션 종목기사도 상위 5개만 노출하고 나머지는 접는다
+    (kr과 달리 중복 회피 목적이 아니라 리포트가 길어 가독성 때문)."""
+    items = "\n".join(
+        f"• **종목{i}**: {i}00원 📈 ▲{i}.00%\n  🔗 [기사{i}](https://n/{i})"
+        for i in range(1, 7)   # 6개 — 5개 초과라 마지막 1개는 접혀야 함
+    )
+    news_body = f"""===TITLE===
+반도체급등
+===SIHWANG===
+1) 📌 요약
+• 나스닥 강세
+===NEWS===
+{items}
+===HOLDINGS===
+===END==="""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: news_body)
+
     us_data = _generate(tmp_path, transcript="", session="us")
     us_telegram = us_data["reports"]["news_telegram"]
-    # us 세션은 캡을 적용하지 않으므로 ---기타--- 마커가 없는 이 응답은 그대로 노출
+    assert tg_format.FOLD_OPEN in us_telegram
+    for i in range(1, 6):
+        assert f"종목{i}" in us_telegram
+        assert us_telegram.index(f"종목{i}") < us_telegram.index(tg_format.FOLD_OPEN)
+    assert "종목6" in us_telegram   # 접힌 채로 존재
+    # 저장(옵시디안 아카이브)용은 접지 않고 6종목 전부 그대로 남아야 한다
+    assert tg_format.FOLD_OPEN not in us_data["reports"]["news"]
+    assert "종목6" in us_data["reports"]["news"]
+
+
+def test_us_news_noop_within_5(tmp_path, monkeypatch):
+    """us 세션도 5개 이하면 접지 않는다."""
+    news_body = """===TITLE===
+반도체급등
+===SIHWANG===
+1) 📌 요약
+• 나스닥 강세
+===NEWS===
+• **삼성전자**: 274,500원 📈 ▲2.43%
+  🔗 [기사1](https://n/1)
+• **SK하이닉스**: 1,645,000원 📈 ▲3.26%
+  🔗 [기사2](https://n/2)
+===HOLDINGS===
+===END==="""
+    monkeypatch.setattr(report_mod, "_call_llm", lambda *a, **k: news_body)
+
+    us_data = _generate(tmp_path, transcript="", session="us")
+    us_telegram = us_data["reports"]["news_telegram"]
     assert tg_format.FOLD_OPEN not in us_telegram
-    assert all(name in us_telegram for name in
-               ("삼성전자", "SK하이닉스", "나스닥지수", "마이크론"))
+    assert "삼성전자" in us_telegram and "SK하이닉스" in us_telegram
 
 
 def test_capture_rest_mark_folds_stocks_after_top_3(tmp_path, monkeypatch):
