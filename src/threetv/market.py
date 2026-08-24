@@ -26,6 +26,10 @@ def _fmt_quote(
     if not (math.isfinite(close) and math.isfinite(pct)):
         log.warning("시세 값이 NaN/inf → 제외: %s (%s)", name, ticker)
         return None
+    # direction/icon은 반올림된 change_pct 기준으로 정한다 — 원본 pct(예: -0.004%)로
+    # 판정하면 화면엔 반올림된 "0.00%"가 찍히는데 아이콘·화살표는 하락(📉▼)으로
+    # 나가 서로 모순된다(2026-08-20 실측: 2년물 국채수익률).
+    rounded_pct = round(pct, 2)
     return {
         "name": name,
         "ticker": ticker,
@@ -33,10 +37,10 @@ def _fmt_quote(
         "close": round(close, 2),
         "prev_close": round(prev_close, 2)
         if prev_close is not None and math.isfinite(prev_close) else None,
-        "change_pct": round(pct, 2),
-        "direction": "▲" if pct > 0 else ("▼" if pct < 0 else "-"),
+        "change_pct": rounded_pct,
+        "direction": "▲" if rounded_pct > 0 else ("▼" if rounded_pct < 0 else "-"),
         # 한눈에 등락을 보기 위한 아이콘 (텔레그램 가독성)
-        "icon": "📈" if pct > 0 else ("📉" if pct < 0 else "➖"),
+        "icon": "📈" if rounded_pct > 0 else ("📉" if rounded_pct < 0 else "➖"),
         "asof": asof,      # 종가 기준일 (YYYY-MM-DD)
     }
 
@@ -75,8 +79,20 @@ def _pair_from_closes(closes) -> tuple[float, float, str] | None:
     return close, prev, asof
 
 
+# settings.yaml의 market.indices엔 국내 지수도 yfinance 티커로 섞여 있다
+# (KOSPI/KOSDAQ은 pykrx가 아니라 Yahoo `^KS11`/`^KQ11`로 조회) — 이 배치 함수가
+# 전부 "US"로 찍으면 정오(noon) 세션의 `market == "KR"` 필터가 KOSPI/KOSDAQ을
+# 영영 못 찾는다(2026-08-20 실측: "장중 KR 지수: 조회 실패"가 매일 재현 —
+# 조회 자체는 35/36건 성공했는데 market 태그가 전부 US라 필터에서 다 걸러졌다).
+_KR_INDEX_TICKERS = {"^KS11", "^KQ11", "^KS200"}
+
+# fetch_indices()의 stale 표기에서 빼는 티커 — KOSPI/KOSDAQ만. KOSPI200은
+# 넣지 않는다(fetch_indices() 참고: 진짜 데이터 결측 전례가 있어 계속 감시 대상).
+_STALE_EXEMPT_TICKERS = {"^KS11", "^KQ11"}
+
+
 def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
-    """미국 티커 여러 개를 **한 번의 요청**으로 조회.
+    """미국(+ Yahoo 티커로 조회하는 국내 지수) 여러 개를 **한 번의 요청**으로 조회.
 
     티커마다 개별 요청을 보내면(33개) Yahoo가 공유 CI IP를 스로틀링해 NaN만
     돌려주는 일이 잦다 — 2026-07-25 실측 실패 원인. yf.download 배치 호출은
@@ -111,7 +127,8 @@ def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
             missing.append(sym)
             continue
         close, prev, asof = pair
-        q = _fmt_quote(tickers[sym], sym, "US", close, (close - prev) / prev * 100,
+        market = "KR" if sym in _KR_INDEX_TICKERS else "US"
+        q = _fmt_quote(tickers[sym], sym, market, close, (close - prev) / prev * 100,
                        asof, prev)
         if q:
             quotes.append(q)
@@ -130,7 +147,12 @@ def us_quotes_batch(tickers: dict[str, str]) -> list[dict]:
 
 
 def us_quote(ticker: str, name: str | None = None) -> dict | None:
-    """미국 종목/지수의 최근 종가와 전일 대비 등락률 (개별 조회)."""
+    """Yahoo 티커 종목/지수의 최근 종가와 전일 대비 등락률 (개별 조회).
+
+    이름과 달리 미국 전용이 아니다 — us_quotes_batch()가 배치 실패분을 재시도할
+    때도 이 함수를 쓰는데, KOSPI/KOSDAQ도 그 배치에 섞여 있다. market 태그를
+    US로 고정하면 배치가 실패한 날만 국내 지수가 US로 잘못 찍힌다.
+    """
     import yfinance as yf
 
     try:
@@ -142,7 +164,8 @@ def us_quote(ticker: str, name: str | None = None) -> dict | None:
             log.debug("yfinance 유효 종가 부족 %s", ticker)
             return None
         close, prev, asof = pair
-        return _fmt_quote(name or ticker, ticker, "US", close,
+        market = "KR" if ticker in _KR_INDEX_TICKERS else "US"
+        return _fmt_quote(name or ticker, ticker, market, close,
                           (close - prev) / prev * 100, asof, prev)
     except Exception as e:
         log.debug("yfinance 조회 실패 %s: %s", ticker, e)
@@ -237,11 +260,24 @@ def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
     # 기준일이 섞여 있으면 섹션 제목의 단일 기준일 표기가 오해를 부른다.
     # 대표 기준일보다 오래된 항목엔 stale 플래그를 달아, 리포트가 그 항목만
     # 자기 날짜를 함께 쓰도록 한다 (2026-07-26 실측: KOSPI200이 8일 낡은 7/16 데이터).
-    dates = [q["asof"] for q in quotes if q.get("asof")]
+    #
+    # ⚠️ KOSPI/KOSDAQ(^KS11/^KQ11)은 예외 — us/kr 세션이 한국장 개장 전(05~08시
+    # KST)에 도는 구조상 그 시각의 "최신" 종가는 항상 전날 것일 수밖에 없다.
+    # 이건 조회 실패나 데이터 결측이 아니라 세션 타이밍 때문이라 매일 재현되는데,
+    # stale 표기를 달면 매일 KOSPI/KOSDAQ만 경고가 붙어 다른 지수와 다르게
+    # 보인다. 2026-08-21 사용자 확정 — "타지수처럼" 종가 기준 전일대비만
+    # 보여주고 날짜 경고는 달지 않는다(수급/지수 최신성이 중요하면 noon 세션의
+    # "장중 KR 지수"가 그 시각 라이브 재조회로 보완한다).
+    # KOSPI200(^KS200)은 이 예외에서 뺀다 — 2026-07-26 실측으로 8일 낡은 데이터가
+    # 잡힌 전례가 있어(세션 타이밍이 아니라 진짜 데이터 결측), 계속 감시해야 한다.
+    dates = [q["asof"] for q in quotes
+            if q.get("asof") and q["ticker"] not in _STALE_EXEMPT_TICKERS]
     if dates:
         common = max(set(dates), key=dates.count)
         mismatched = []
         for q in quotes:
+            if q["ticker"] in _STALE_EXEMPT_TICKERS:
+                continue
             a = q.get("asof")
             if not a or a == common:
                 continue
