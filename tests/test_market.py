@@ -341,6 +341,11 @@ def test_kospi_kosdaq_never_marked_stale(monkeypatch):
     by = {q["ticker"]: q for q in quotes}
     assert "stale" not in by["^KS11"] and "stale" not in by["^KQ11"]
     assert by["^KS200"].get("stale") is True
+    # 2026-08-25 실측: stale 플래그가 없어도 원본 asof(전날 날짜)가 남아있으면
+    # LLM이 그 날짜 차이를 스스로 근거 삼아 "⚠️(N일 기준)" 경고를 직접 만들어
+    # 붙였다 — 판단 근거 자체를 없애려고 asof도 대표 기준일로 맞춘다.
+    assert by["^KS11"]["asof"] == "2026-07-24" and by["^KQ11"]["asof"] == "2026-07-24"
+    assert by["^KS200"]["asof"] == "2026-07-23"   # 감시 대상은 원래 날짜 유지
 
 
 def test_newer_asof_not_marked_stale(monkeypatch):
