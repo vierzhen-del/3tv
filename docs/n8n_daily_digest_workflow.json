@@ -210,6 +210,92 @@
       }
     },
     {
+      "id": "check-remote",
+      "name": "GitHub 기존 파일 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1480,
+        400
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "url": "={{ \"https://api.github.com/repos/vierzhen-del/3tv-reports/contents/3protv/\" + $json.ymd.slice(0,4) + \"/\" + $json.ymd.slice(4,6) + \"/3protv다이제스트_\" + $json.ymd + \".md?ref=main\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_WRITE>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-digest"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "build-upload",
+      "name": "GitHub 업로드 본문 구성",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// GET 응답에 sha가 있으면 기존 파일 업데이트(같은 날 재실행 시 필요),\n// 없으면(404 Not Found 등, neverError로 여기까지 넘어옴) 신규 생성으로 취급.\n// GitHub Contents API는 파일이 이미 있는데 sha 없이 PUT하면 422로 거부한다.\nconst getRes = $json;\nconst parsed = $('요약 파싱').first().json;\n// vaultNote는 \"요약 파싱\"이 만든 binary.data.data(base64)를 그대로 재사용한다\n// — 여기서 다시 만들면 두 파일 내용이 미세하게 다를 위험이 있다.\nconst bin = $('요약 파싱').first().binary.data.data;\n\nconst body = {\n  message: `다이제스트 업로드 (${parsed.ymd})`,\n  content: bin,\n  branch: 'main',\n};\nif (getRes && getRes.sha) {\n  body.sha = getRes.sha;\n}\nreturn [{ json: { ...parsed, uploadBody: body } }];"
+      }
+    },
+    {
+      "id": "upload-remote",
+      "name": "GitHub 업로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1880,
+        400
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://api.github.com/repos/vierzhen-del/3tv-reports/contents/3protv/\" + $json.ymd.slice(0,4) + \"/\" + $json.ymd.slice(4,6) + \"/3protv다이제스트_\" + $json.ymd + \".md\" }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.uploadBody) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_WRITE>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-digest"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
       "id": "split-chats",
       "name": "채팅방별 분리",
       "type": "n8n-nodes-base.code",
@@ -330,6 +416,33 @@
           },
           {
             "node": "인덱스 읽기",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "GitHub 기존 파일 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub 기존 파일 조회": {
+      "main": [
+        [
+          {
+            "node": "GitHub 업로드 본문 구성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub 업로드 본문 구성": {
+      "main": [
+        [
+          {
+            "node": "GitHub 업로드",
             "type": "main",
             "index": 0
           }
