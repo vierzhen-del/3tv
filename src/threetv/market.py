@@ -277,6 +277,15 @@ def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
         mismatched = []
         for q in quotes:
             if q["ticker"] in _STALE_EXEMPT_TICKERS:
+                # stale 플래그는 안 달지만, 원본 asof(예: 8/24)를 그대로 두면
+                # LLM이 리포트를 쓰면서 이 날짜와 다른 지표들의 asof를 스스로
+                # 비교해 "stale: true"가 없는데도 ⚠️(N일 기준) 경고를 직접
+                # 만들어 붙였다(2026-08-25 실측: KOSPI/KOSDAQ에 여전히
+                # "⚠️(8/24 기준)"이 붙어 나옴 — 프롬프트가 "stale: true인
+                # 항목에만" 이라고 명시했는데도 원본 데이터의 날짜 차이 자체를
+                # 근거로 지어냈다). stale 여부뿐 아니라 LLM이 볼 원본 asof도
+                # 대표 기준일로 맞춰 애초에 판단할 근거를 없앤다.
+                q["asof"] = common
                 continue
             a = q.get("asof")
             if not a or a == common:
