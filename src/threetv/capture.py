@@ -108,6 +108,9 @@ def record_stream(stream_url: str, out_file: Path, until_kst: datetime) -> Path:
     return out_file
 
 
+_VOD_DOWNLOAD_TIMEOUT = 1800   # 초 — 트리밍 실패 시 아래에서 같은 값으로 1회 더 씀
+
+
 def download_vod(
     vod_url: str,
     out_file: Path,
@@ -120,22 +123,46 @@ def download_vod(
     start_sec/duration_sec을 함께 주면 yt-dlp --download-sections로 해당
     구간만 정확히 잘라 받는다 (사전검토용 트리밍 테스트 — 시간·비용 절감).
     영상 전체를 받은 뒤 자르는 방식이 아니라 필요한 구간만 다운로드한다.
+
+    ⚠️ 2026-08-27 실측: 방금 올라온 VOD는 유튜브 쪽에 구간(range) seek이
+    편한 포맷이 아직 준비 안 돼 있어 --download-sections가 30분 타임아웃
+    안에 못 끝난 사례가 있었다(us-session run #50, 사람이 트리밍 없이 수동
+    재실행해 복구). 트리밍 다운로드가 타임아웃되면 자동으로 트리밍 없는
+    전체 다운로드를 1회 재시도한다 — 그날 수동 복구했던 우회를 그대로
+    코드에 넣은 것. 둘 다 실패하면(전체도 타임아웃) 호출부의 실패 처리로
+    넘어간다.
     """
     cookies = _cookies_file()
     # 마지막 bestvideo+bestaudio/best는 무조건 폴백 — 특정 영상에 480p 제약을
     # 만족하는 포맷이 없어 "Requested format is not available"로 죽는 것을 방지
     # (해상도 상한을 못 지키더라도 다운로드 자체는 성공시키는 게 우선)
-    cmd = _ytdlp_base(cookies) + [
+    base_cmd = _ytdlp_base(cookies) + [
         "-f", f"best[height<={resolution}]/bv*[height<={resolution}]+ba/bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",
     ]
-    if start_sec is not None and duration_sec is not None:
+    trimmed = start_sec is not None and duration_sec is not None
+    cmd = list(base_cmd)
+    if trimmed:
         end_sec = start_sec + duration_sec
         cmd += ["--download-sections", f"*{start_sec}-{end_sec}"]
         log.info("VOD 구간 트리밍: %d초~%d초 (%d초 분량)만 다운로드", start_sec, end_sec, duration_sec)
     cmd += ["-o", str(out_file), vod_url]
     log.info("VOD 다운로드: %s", vod_url)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_VOD_DOWNLOAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        if not trimmed:
+            raise CaptureError(f"VOD 다운로드가 {_VOD_DOWNLOAD_TIMEOUT}초 내에 끝나지 않음: {vod_url}")
+        log.warning("구간 트리밍 다운로드가 %d초 내 실패 — 트리밍 없이 전체 다운로드 재시도",
+                    _VOD_DOWNLOAD_TIMEOUT)
+        full_cmd = base_cmd + ["-o", str(out_file), vod_url]
+        try:
+            proc = subprocess.run(full_cmd, capture_output=True, text=True,
+                                   timeout=_VOD_DOWNLOAD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise CaptureError(
+                f"VOD 다운로드가 트리밍/전체 재시도 모두 {_VOD_DOWNLOAD_TIMEOUT}초 내에 끝나지 않음: {vod_url}"
+            )
     if proc.returncode != 0 or not out_file.exists():
         raise CaptureError(f"VOD 다운로드 실패: {(proc.stderr or '')[-800:]}")
     log.info("다운로드 완료: %.1f MB", out_file.stat().st_size / 1e6)
