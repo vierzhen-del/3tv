@@ -91,3 +91,70 @@ def test_find_recent_vod_list_call_failure_raises(monkeypatch):
 
     with pytest.raises(capture.CaptureError):
         capture.find_recent_vod("https://www.youtube.com/@gyeomsonisnothing/live")
+
+
+# ───────────────────── download_vod 타임아웃 재시도 ─────────────────────
+
+def test_download_vod_success_no_timeout(tmp_path, monkeypatch):
+    out_file = tmp_path / "out.mp4"
+
+    def fake_run(cmd, **kwargs):
+        out_file.write_bytes(b"0" * 1000)
+        return _run_result("", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(capture, "_cookies_file", lambda: None)
+
+    result = capture.download_vod("https://y/v", out_file, 480, 269, 2700)
+    assert result == out_file
+
+
+def test_download_vod_trimmed_timeout_falls_back_to_full(tmp_path, monkeypatch):
+    """2026-08-27 실측: 방금 올라온 VOD는 --download-sections가 30분 안에
+    안 끝났다(us-session run #50). 트리밍이 타임아웃되면 트리밍 없이
+    전체 다운로드를 자동으로 1회 더 시도해야 한다."""
+    out_file = tmp_path / "out.mp4"
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "--download-sections" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 1800)
+        out_file.write_bytes(b"0" * 1000)
+        return _run_result("", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(capture, "_cookies_file", lambda: None)
+
+    result = capture.download_vod("https://y/v", out_file, 480, 269, 2700)
+    assert result == out_file
+    assert len(calls) == 2
+    assert "--download-sections" in calls[0] and "--download-sections" not in calls[1]
+
+
+def test_download_vod_both_attempts_timeout_raises(tmp_path, monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 1800)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(capture, "_cookies_file", lambda: None)
+
+    with pytest.raises(capture.CaptureError):
+        capture.download_vod("https://y/v", tmp_path / "out.mp4", 480, 269, 2700)
+
+
+def test_download_vod_untrimmed_timeout_raises_without_retry(tmp_path, monkeypatch):
+    """트리밍 없이(start_sec/duration_sec 없이) 호출됐는데 타임아웃되면
+    재시도할 게 없다 — 바로 실패해야 한다(무한 재시도 방지)."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        raise subprocess.TimeoutExpired(cmd, 1800)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(capture, "_cookies_file", lambda: None)
+
+    with pytest.raises(capture.CaptureError):
+        capture.download_vod("https://y/v", tmp_path / "out.mp4", 480)
+    assert len(calls) == 1
