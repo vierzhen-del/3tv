@@ -1,0 +1,875 @@
+{
+  "name": "3tv 세션 스케줄러 (workflow_dispatch 직접 발사)",
+  "nodes": [
+    {
+      "id": "trig_0",
+      "name": "us 05:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 5 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_0",
+      "name": "us 05:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/us-session.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\"}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_1",
+      "name": "kr 07:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        180
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_1",
+      "name": "kr 07:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        180
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/kr-session.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\"}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_2",
+      "name": "noon 11:05",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        360
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "5 11 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_2",
+      "name": "noon 11:05 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        360
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/noon-session.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\"}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_3",
+      "name": "night 22:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        540
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 22 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_3",
+      "name": "night 22:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        540
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"22:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_4",
+      "name": "night 23:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        720
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 23 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_4",
+      "name": "night 23:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        720
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"23:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_5",
+      "name": "night 00:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        900
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_5",
+      "name": "night 00:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        900
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"00:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_6",
+      "name": "night 01:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1080
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 1 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_6",
+      "name": "night 01:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1080
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"01:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_7",
+      "name": "night 02:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1260
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_7",
+      "name": "night 02:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1260
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"02:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_8",
+      "name": "night 03:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1440
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_8",
+      "name": "night 03:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1440
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"03:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_9",
+      "name": "night 04:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1620
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 4 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_9",
+      "name": "night 04:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1620
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"04:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_10",
+      "name": "night 05:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1800
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 5 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_10",
+      "name": "night 05:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1800
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-slot.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\", \"inputs\": {\"slot\": \"05:00\"}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "trig_11",
+      "name": "digest 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1980
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dispatch_11",
+      "name": "digest 06:00 발사",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1980
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/vierzhen-del/3tv/actions/workflows/night-digest.yml/dispatches",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"ref\": \"claude/youtube-market-analysis-vucjwq\"}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer <N8N_GITHUB_PAT_ACTIONS>"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-3tv-scheduler"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "us 05:00": {
+      "main": [
+        [
+          {
+            "node": "us 05:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "kr 07:00": {
+      "main": [
+        [
+          {
+            "node": "kr 07:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "noon 11:05": {
+      "main": [
+        [
+          {
+            "node": "noon 11:05 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 22:00": {
+      "main": [
+        [
+          {
+            "node": "night 22:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 23:00": {
+      "main": [
+        [
+          {
+            "node": "night 23:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 00:00": {
+      "main": [
+        [
+          {
+            "node": "night 00:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 01:00": {
+      "main": [
+        [
+          {
+            "node": "night 01:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 02:00": {
+      "main": [
+        [
+          {
+            "node": "night 02:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 03:00": {
+      "main": [
+        [
+          {
+            "node": "night 03:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 04:00": {
+      "main": [
+        [
+          {
+            "node": "night 04:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "night 05:00": {
+      "main": [
+        [
+          {
+            "node": "night 05:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "digest 06:00": {
+      "main": [
+        [
+          {
+            "node": "digest 06:00 발사",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
