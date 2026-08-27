@@ -4,7 +4,7 @@ name: kr-session
 
 on:
   schedule:
-    - cron: "0 22 * * 0-4"    # KST 월~금 07:00 기동 (지연 흡수 버퍼 55분)
+    - cron: "12 22 * * 0-4"    # KST 월~금 07:12 기동 (지연 흡수 버퍼 55분, 정각 혼잡 회피)
   workflow_dispatch:
     inputs:
       vod_url:

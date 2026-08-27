@@ -6,7 +6,7 @@ name: night-digest
 
 on:
   schedule:
-    - cron: "0 21 * * 1-5"    # KST 06:00
+    - cron: "17 21 * * 1-5"    # KST 06:17 (정각 혼잡 회피 — 2026-08-27 실측: 정각 cron이 통째로 드롭됨)
   workflow_dispatch:
     inputs:
       notify:
