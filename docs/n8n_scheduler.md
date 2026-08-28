@@ -12,8 +12,15 @@ GitHub Actions의 `on: schedule`(cron) 트리거가 그날 반복적으로 지�
 
 이 워크플로는 `on: schedule` 대신 **S9의 n8n이 정해진 시각에 GitHub REST API로
 `workflow_dispatch`를 직접 호출**해 지연·드롭을 구조적으로 우회한다. 각 세션 워크플로 YAML의
-`on: schedule` 블록은 안전망으로 그대로 둔다(드물게 GitHub cron이 먼저 돌면 n8n 발사는 그냥
-한 번 더 도는 정도 — 중복 실행은 텔레그램 중복 발송 정도의 낮은 비용이라 굳이 막지 않는다).
+`on: schedule` 블록은 안전망으로 그대로 둔다.
+
+**2026-08-27 후속**: 실제로 안전망 cron과 n8n이 겹쳐 돌아 us 리포트가 텔레그램에 2회
+중복 발송된 사례가 있었다. 그래서 각 워크플로 맨 앞에 중복 실행 가드를 추가했다
+(`github.event_name == 'schedule'`일 때만 동작, `GITHUB_TOKEN`으로 같은 워크플로의 오늘자
+성공 실행을 조회해 있으면 무거운 단계를 전부 건너뜀 — night-slot은 날짜 대신 슬롯 시각
+±40분 윈도우로 판단). n8n·수동 `workflow_dispatch`는 이 가드의 영향을 받지 않는다 —
+복구·테스트 실행이 막히면 안 되기 때문. 상세는 각 워크플로 YAML의 "안전망 cron 중복 실행
+방지" 스텝 참고.
 
 ## 커버 범위 (12개 트리거)
 
