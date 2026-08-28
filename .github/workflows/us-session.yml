@@ -42,22 +42,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # n8n이 workflow_dispatch로 이미 오늘 성공시켰으면 이 안전망 cron 실행은
+      # 건너뛴다 — schedule과 n8n이 겹쳐 돌면 텔레그램 중복 발송·Gemini 할당량
+      # 낭비가 생긴다(2026-08-27 실측: us 리포트 2회 중복 발송). workflow_dispatch
+      # (수동/n8n)는 절대 건너뛰지 않는다 — VOD 복구·테스트 실행이 막히면 안 됨.
+      - name: 안전망 cron 중복 실행 방지
+        id: dedup
+        if: github.event_name == 'schedule'
+        run: |
+          curl -sS -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/us-session.yml/runs?status=success&per_page=10" \
+            -o /tmp/runs.json
+          ALREADY=$(python3 -c "
+          import json, datetime
+          data = json.load(open('/tmp/runs.json'))
+          today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime('%Y-%m-%d')
+          cur = $GITHUB_RUN_ID
+          found = False
+          for run in data.get('workflow_runs', []):
+              if run['id'] == cur:
+                  continue
+              dt = datetime.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
+              kst = dt.astimezone(datetime.timezone(datetime.timedelta(hours=9)))
+              if kst.strftime('%Y-%m-%d') == today:
+                  found = True
+                  break
+          print('true' if found else 'false')
+          ")
+          echo "already=$ALREADY" >> "$GITHUB_OUTPUT"
+          if [ "$ALREADY" = "true" ]; then
+            echo "::notice::오늘 이미 성공한 실행이 있어(n8n 등) 이 안전망 cron 실행은 건너뜁니다"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.dedup.outputs.already != 'true'
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install Deno (yt-dlp JS 챌린지 솔버용)
+        if: steps.dedup.outputs.already != 'true'
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        if: steps.dedup.outputs.already != 'true'
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           pip install -r requirements.txt
 
       - name: Run pipeline (us)
+        if: steps.dedup.outputs.already != 'true'
         env:
           PYTHONPATH: src
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

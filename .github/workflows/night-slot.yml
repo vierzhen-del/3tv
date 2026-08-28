@@ -60,23 +60,76 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # n8n이 workflow_dispatch로 이 슬롯을 이미 오늘 성공시켰으면 이 안전망
+      # cron 실행은 건너뛴다 — schedule과 n8n이 겹쳐 돌면 중복 캡처가 생긴다
+      # (2026-08-27 실측: us 리포트 2회 중복 발송, 같은 계열 문제). 슬롯별로
+      # 하루 8번 정상 실행되므로 "오늘 성공 여부"가 아니라 "이 슬롯 시각
+      # ±40분 안에 이미 성공한 실행이 있는지"로 판단한다. workflow_dispatch
+      # (수동/n8n)는 절대 건너뛰지 않는다 — 복구·테스트 실행이 막히면 안 됨.
+      - name: 안전망 cron 중복 실행 방지
+        id: dedup
+        if: github.event_name == 'schedule'
+        run: |
+          case "${{ github.event.schedule }}" in
+            "9 13 * * 1-5") HH="22" ;;
+            "9 14 * * 1-5") HH="23" ;;
+            "9 15 * * 1-5") HH="00" ;;
+            "9 16 * * 1-5") HH="01" ;;
+            "9 17 * * 1-5") HH="02" ;;
+            "9 18 * * 1-5") HH="03" ;;
+            "9 19 * * 1-5") HH="04" ;;
+            "9 20 * * 1-5") HH="05" ;;
+            *) HH="" ;;
+          esac
+          curl -sS -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/night-slot.yml/runs?status=success&per_page=30" \
+            -o /tmp/runs.json
+          ALREADY=$(python3 -c "
+          import json, datetime
+          data = json.load(open('/tmp/runs.json'))
+          hh = '$HH'
+          cur = $GITHUB_RUN_ID
+          found = False
+          if hh:
+              now_kst = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+              target = now_kst.replace(hour=int(hh), minute=0, second=0, microsecond=0)
+              for run in data.get('workflow_runs', []):
+                  if run['id'] == cur:
+                      continue
+                  dt = datetime.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
+                  kst = dt.astimezone(datetime.timezone(datetime.timedelta(hours=9)))
+                  if abs((kst - target).total_seconds()) <= 40 * 60:
+                      found = True
+                      break
+          print('true' if found else 'false')
+          ")
+          echo "already=$ALREADY" >> "$GITHUB_OUTPUT"
+          if [ "$ALREADY" = "true" ]; then
+            echo "::notice::이 슬롯(${HH}:00)을 이미 성공시킨 실행이 있어(n8n 등) 이 안전망 cron 실행은 건너뜁니다"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.dedup.outputs.already != 'true'
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install Deno (yt-dlp JS 챌린지 솔버용)
+        if: steps.dedup.outputs.already != 'true'
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        if: steps.dedup.outputs.already != 'true'
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           pip install -r requirements.txt
 
       - name: Determine slot
         id: slot
+        if: steps.dedup.outputs.already != 'true'
         run: |
           if [ -n "${{ github.event.inputs.slot }}" ]; then
             HH="${{ github.event.inputs.slot }}"
@@ -98,6 +151,7 @@ jobs:
           echo "hhmm=${HH}:00" >> "$GITHUB_OUTPUT"
 
       - name: Run pipeline (night slot)
+        if: steps.dedup.outputs.already != 'true'
         env:
           PYTHONPATH: src
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
