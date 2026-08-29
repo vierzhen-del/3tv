@@ -242,6 +242,43 @@ def _fold_after(md: str, mark: str, title: str) -> str:
     return out
 
 
+_FLOW_CALLOUT_RE = re.compile(
+    r"^> ?\[!note\][+-]?\s*수급\s*상세[^\n]*\n((?:^>.*(?:\n|$))*)", re.M
+)
+
+
+def _degroup_flow_callout(md: str) -> str:
+    """`---수급상세---` 대신 옵시디안 콜아웃(`> [!note]-`)을 직접 써버린 경우를 정규화.
+
+    프롬프트가 마커를 쓰라고 명시해도(5번 섹션 지시 참고) Gemini가 이 리포트의
+    목적지가 옵시디안이라는 걸 프롬프트 다른 곳(옵시디안용 마크다운 운운)에서
+    유추해 콜아웃 문법을 직접 써버리는 경우가 있다(2026-08-14 실측 — 텔레그램에
+    "> [!note]- 수급 상세 ..." 원문이 그대로 노출됨. `_esc()`가 ">"를 `&gt;`로
+    이스케이프해 HTML 자체는 유효했지만 `_FOLD_RE`가 이 문법을 못 잡아 접기 처리가
+    아예 안 되고 콜아웃 문법만 그대로 화면에 보였다). 콜아웃 헤더 줄과 각 줄의
+    `> ` 인용 prefix를 벗겨 마커 형식으로 되돌린 뒤 기존 `_fold_after` 파이프라인에
+    태운다 — 아래에서 마커를 못 찾으면(=LLM이 지시대로 마커를 썼으면) 그대로 통과한다.
+    """
+    def _cb(m: re.Match) -> str:
+        body = "\n".join(
+            ln[2:] if ln.startswith("> ") else ln[1:] if ln.startswith(">") else ln
+            for ln in m.group(1).splitlines()
+        )
+        return f"{FLOW_DETAIL_MARK}\n{body}\n"
+    return _FLOW_CALLOUT_RE.sub(_cb, md)
+
+
+def _strip_mark_line(md: str, mark: str) -> str:
+    """저장(아카이브)용 — 마커 줄만 지우고 내용은 그 자리에 그대로 펼쳐 둔다(접지 않음).
+
+    `_fold_after`와 달리 재배치가 없다 — 마커 다음 내용은 이미 원래 있어야 할
+    자리에 있으므로, 그 표식 줄 하나만 없애면 아카이브 본문에선 평범한 목록으로
+    보인다(2026-08-14 사용자 확정 — 텔레그램은 접어서 보내고 저장본은 펼쳐서
+    남긴다. news 섹션에 이미 적용된 "저장시는 풀고저장" 원칙과 동일).
+    """
+    return re.sub(rf"^{re.escape(mark)}\n?", "", md, count=1, flags=re.M)
+
+
 _LINK_ROW_RE = re.compile(r"^\s*🔗 .*$", re.M)
 
 
@@ -411,6 +448,14 @@ def _parse_sections(text: str, session: str = "") -> dict:
 
     # 가독성 후처리 (2026-08-01 요청) — 마커 기반 접기는 LLM이 마커를 안 찍으면
     # 원문 그대로 통과하고, 링크 줄 접기는 마커 없이 후처리라 항상 적용된다.
+    sihwang = _degroup_flow_callout(sihwang)
+
+    # 수급 상세는 news와 같은 원칙(2026-08-14 확정) — 텔레그램은 접어서 보내고
+    # 저장본은 펼쳐서 남긴다. 분기 전에 정규화해 두 변형이 같은 마커 위치를 본다.
+    sihwang_archive = _strip_mark_line(sihwang, FLOW_DETAIL_MARK)
+    sihwang_archive = _fold_after(sihwang_archive, US_CTX_MARK, "미국장 참고")
+    sihwang_archive = _fold_link_rows(sihwang_archive)
+
     sihwang = _fold_after(sihwang, FLOW_DETAIL_MARK,
                           "수급 상세 (그외 주체 · TOP10 · ETF 등락)")
     sihwang = _fold_after(sihwang, US_CTX_MARK, "미국장 참고")
@@ -446,16 +491,18 @@ def _parse_sections(text: str, session: str = "") -> dict:
         news_telegram += (f"\n\n### 📰 데일리 주요 종목기사 정리\n"
                           f"{_fold_top_n(daily_raw, 3, '그 외 이슈')}")
 
-    parts = [sihwang] + ([news_archive] if news_archive else [])
+    parts = [sihwang_archive] + ([news_archive] if news_archive else [])
     return {
         "title_keyword": (sec.get("TITLE", "").splitlines() or [""])[0].strip(),
-        # 하위호환 — 열화 경로·아카이브가 쓰는 통합 본문
+        # 하위호환 — 열화 경로가 쓰는 통합 본문 (텔레그램 발송용)
         "telegram_text": sec.get("TELEGRAM") or sihwang,
+        # 아카이브용 통합 본문 — sihwang_md 누락 시에만 쓰이는 폴백이라 저장 기준(펼침)에 맞춘다
         "markdown_report": "\n\n".join(parts),
         "holdings_mentioned": _parse_holdings_lines(sec.get("HOLDINGS", "")),
+        # sihwang=텔레그램용(수급상세 접힘) / sihwang_md=아카이브용(수급상세 펼침)
         # news: 저장용(접지 않음) / news_telegram: 전송용(접힘). 아카이브는 news를
         # 쓰고, 텔레그램 전송은 news_telegram이 있으면 그걸 우선한다.
-        "reports": {"sihwang": sihwang, "sihwang_md": sihwang,
+        "reports": {"sihwang": sihwang, "sihwang_md": sihwang_archive,
                    "news": news_archive, "news_telegram": news_telegram},
     }
 
@@ -1364,8 +1411,10 @@ def generate_report(
      ticker는 쓰지 마세요** — 코드만 나열하면 사람이 못 읽습니다. 단 name이 코드
      형태(예: "0197X0")로 와 있으면 **그대로 두세요 — 이름을 추측해 채우지 마세요.**
    - 위 목록들은 **한 줄에 한 종목**씩 쓰세요 (쉼표로 이어붙이지 말 것)
-   - **VIX (미장·국장)**: 미장은 검증 시세의 VIX, 국장은 VKOSPI(코스피 변동성지수)가
-     검증 시세에 있으면 사용하고 없으면 "확인 불가"로 적으세요
+   - **VIX (미장)**: 검증 시세의 VIX를 사용하세요. (국장 VKOSPI는 조회 경로가
+     없어 요청하지 않습니다 — 2026-08-14 확정: 매일 "확인 불가"만 나오는
+     걸 방지하기 위해 프롬프트에서 아예 뺐습니다. market.py/settings.yaml에
+     VKOSPI 조회를 실제로 구현하기 전엔 다시 넣지 마세요.)
    - 수급 데이터가 비어 있으면 그 항목만 "조회 실패"로 적고 넘어가세요 (숫자 창작 금지)
 
 ### 리포트 ② 종목 기사검색 (===NEWS===)

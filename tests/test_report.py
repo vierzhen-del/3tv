@@ -1100,6 +1100,10 @@ def test_prompt_asks_for_30y_treasury(monkeypatch):
 # ── 2026-08-01 가독성 개편: 접기 마커 + 링크 정규화 ──
 
 def test_flow_detail_mark_gets_folded():
+    """수급 상세는 텔레그램(reports.sihwang)에서만 접히고, 저장본(markdown_report/
+    reports.sihwang_md)은 news와 같은 원칙(2026-08-14 확정)으로 펼쳐 남는다 —
+    나중에 컨텍스트로 재사용될 때 전체가 검색돼야 하고, 사람이 볼트에서 직접
+    열어봐도 바로 읽혀야 하기 때문."""
     text = """===TITLE===
 키워드
 ===SIHWANG===
@@ -1111,10 +1115,47 @@ def test_flow_detail_mark_gets_folded():
 · 순매수 top10 여기
 ===END==="""
     out = report_mod._parse_sections(text)
-    md = out["markdown_report"]
-    assert "· 개인: +100" in md
-    assert report_mod.tg_format.FOLD_OPEN in md
-    assert "· 연기금: +10" not in md.split(report_mod.tg_format.FOLD_OPEN)[0]
+
+    tg = out["reports"]["sihwang"]
+    assert "· 개인: +100" in tg
+    assert report_mod.tg_format.FOLD_OPEN in tg
+    assert "· 연기금: +10" not in tg.split(report_mod.tg_format.FOLD_OPEN)[0]
+
+    for archive in (out["markdown_report"], out["reports"]["sihwang_md"]):
+        assert "· 개인: +100" in archive
+        assert "· 연기금: +10" in archive
+        assert "· 순매수 top10 여기" in archive
+        assert report_mod.tg_format.FOLD_OPEN not in archive
+        assert "---수급상세---" not in archive
+
+
+def test_flow_detail_callout_syntax_gets_normalized():
+    """Gemini가 `---수급상세---` 마커 대신 옵시디안 콜아웃(`> [!note]-`)을 직접
+    써버려도(2026-08-14 실측 — 텔레그램에 콜아웃 원문이 그대로 노출됨) 텔레그램은
+    정상적으로 접히고, 저장본은 펼쳐진 평문으로 남아야 한다."""
+    text = """===TITLE===
+키워드
+===SIHWANG===
+5) 🔎 수급 · 변동성
+· 개인: +100
+· 외국인: -50
+
+> [!note]- 수급 상세 (그외 주체 · TOP10 · ETF 등락)
+> · 연기금: +10
+> · 순매수 top10 여기
+===END==="""
+    out = report_mod._parse_sections(text)
+
+    tg = out["reports"]["sihwang"]
+    assert report_mod.tg_format.FOLD_OPEN in tg
+    assert "[!note]" not in tg
+    assert "· 연기금: +10" not in tg.split(report_mod.tg_format.FOLD_OPEN)[0]
+    assert "· 연기금: +10" in tg   # 접기 블록 안에는 남아 있음
+
+    archive = out["reports"]["sihwang_md"]
+    assert "[!note]" not in archive
+    assert "· 연기금: +10" in archive
+    assert report_mod.tg_format.FOLD_OPEN not in archive
 
 
 def test_us_ctx_mark_gets_folded_for_kr():
