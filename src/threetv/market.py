@@ -291,8 +291,20 @@ def fetch_indices(indices_cfg: dict[str, str]) -> list[dict]:
             if not a or a == common:
                 continue
             mismatched.append(f"{q['name']}({a})")
-            if a < common:      # ISO 날짜라 문자열 비교로 충분
-                q["stale"] = True
+            q["stale"] = a < common      # ISO 날짜라 문자열 비교로 충분
+            # 날짜 태그 문구를 코드가 직접 완성해 LLM에 넘긴다 — asof를 raw로
+            # 주면 "stale만 표기하라"는 프롬프트 지시와 무관하게 LLM이 날짜
+            # 차이 자체를 근거로 스스로 태그를 지어내는 문제가 반복됐다
+            # (2026-08-25: KOSPI/KOSDAQ에 stale 없이도 ⚠️ 표기, 2026-08-31:
+            # 주말에도 거래되는 선물·금·환율이 대표기준일보다 최신인데도
+            # 태그가 붙음). 방향(더 낡음/더 최신)과 무관하게 다르면 태그를
+            # 만들고, LLM은 date_note를 그대로 옮기기만 하면 되게 한다.
+            try:
+                y, m, d = a.split("-")
+                mmdd = f"{int(m)}/{int(d)}"
+            except ValueError:
+                mmdd = a
+            q["date_note"] = f"⚠️({mmdd} 기준)" if q["stale"] else f"({mmdd} 기준)"
         if mismatched:
             log.warning("기준일 불일치 (대표 %s): %s", common, ", ".join(mismatched[:10]))
     return quotes
