@@ -349,7 +349,12 @@ def test_kospi_kosdaq_never_marked_stale(monkeypatch):
 
 
 def test_newer_asof_not_marked_stale(monkeypatch):
-    """대표보다 최신인 항목(환율 등)은 stale이 아니다."""
+    """대표보다 최신인 항목(환율 등)은 stale=False이고, 경고(⚠️) 없는 date_note만 받는다.
+
+    2026-08-31 실측: 주말에도 거래되는 선물·금·환율이 대표 기준일보다 최신인데도
+    LLM이 raw asof 차이만 보고 스스로 날짜 경고를 지어내는 문제가 재발했다 —
+    코드가 date_note를 결정론적으로 만들어 LLM은 그대로 옮기기만 하면 되게 한다.
+    """
     def fake_batch(cfg):
         out = []
         for t, n in cfg.items():
@@ -360,4 +365,6 @@ def test_newer_asof_not_marked_stale(monkeypatch):
     quotes = market.fetch_indices(
         {"^DJI": "다우존스", "^IXIC": "나스닥", "KRW=X": "원/달러"})
     by = {q["ticker"]: q for q in quotes}
-    assert "stale" not in by["KRW=X"]
+    assert by["KRW=X"]["stale"] is False
+    assert by["KRW=X"]["date_note"] == "(7/26 기준)"     # ⚠️ 없음 — 더 오래된 게 아니라 더 최신
+    assert "date_note" not in by["^DJI"] and "date_note" not in by["^IXIC"]
