@@ -7,7 +7,7 @@
   "nodes": [
     {
       "id": "schedule",
-      "name": "평일 07:10 / 08:50 / 09:40",
+      "name": "평일 07:10 / 08:50 / 09:40 / 12:30",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -28,6 +28,10 @@
             {
               "field": "cronExpression",
               "expression": "40 9 * * 1-5"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "30 12 * * 1-5"
             }
           ]
         }
