@@ -31,7 +31,11 @@ GitHub Actions ─push─▶ 3tv-reports repo ─(n8n fetch)─▶ RaeVault/3pro
 3. 워크플로 Settings → **Timezone: Asia/Seoul** 확인
 4. 활성화(Active 토글)
 
-동작: 평일 **07:10**(us 리포트) · **08:50**(kr 병합본) · **09:40**(재시도) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
+동작: 평일 **07:10**(us 리포트) · **08:50**(kr 병합본) · **09:40**(재시도) · **12:30**(정오 세션) KST에 실행 → `3tv-reports`의 `3protv/YYYY/MM/`에서 오늘 날짜 md를 찾아 `/root/obsidian/3protv/YYYY/MM/`에 저장 → Syncthing이 1분 내 S26으로 전파.
+
+### 2026-09-03 추가: 정오 세션 동기화 공백 (사용자 지적으로 발견)
+
+기존 3슬롯(07:10/08:50/09:40)은 전부 오전 중이라 **정오(noon) 세션 리포트(11:05~12:20 KST 완료)를 커버하는 슬롯이 아예 없었다** — 정오 리포트는 다음날 07:10 슬롯이 돌기 전까지 로컬 볼트에 절대 안 들어오는 구조적 공백이었다(그날 안에 옵시디안에 보이려면 수동 백필이 필요했다). `_index.md`가 GitHub 쪽엔 정상 갱신돼 있는데 로컬(S9→S26)에 며칠치가 안 보인다는 신고를 조사하다 발견 — 실제로는 버그가 아니라 "다음 예정 슬롯을 기다리는 정상 지연"이었지만, 정오분만은 기다려도 그날 안엔 절대 안 온다는 게 문제였다. **12:30 KST 슬롯을 추가**해 정오 세션 완료 후 여유를 두고 그날 안에 동기화되게 했다.
 
 > ⚠️ **이미 예전 버전을 import 해뒀다면 다시 import 해야 합니다.** n8n은 JSON 파일과 연결돼 있지 않고 import 시점의 사본을 들고 있습니다. 기존 워크플로를 열어 전체 선택 후 삭제하고 붙여넣거나, 새로 import한 뒤 옛 워크플로를 비활성화하세요 (둘 다 Active면 같은 파일을 두 번 씁니다).
 
@@ -56,7 +60,7 @@ GitHub cron 실측 지연이 40~55분입니다. 2026-07-26 kr 세션은 08:04 KS
 
 | # | 노드 | 설정 |
 |---|------|------|
-| 1 | Schedule Trigger | Cron: `10 7 * * 1-5`, `50 8 * * 1-5`, `40 9 * * 1-5` (KST) |
+| 1 | Schedule Trigger | Cron: `10 7 * * 1-5`, `50 8 * * 1-5`, `40 9 * * 1-5`, `30 12 * * 1-5` (KST) |
 | 2 | Code (오늘 경로 계산) | 아래 스니펫 |
 | 3 | HTTP Request (파일 목록) | GET `https://api.github.com/repos/{OWNER}/3tv-reports/contents/3protv/{yyyy}/{mm}?ref=main`, Header: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, Options → Response → **Never Error** 켜기 |
 | 4 | Code (오늘 파일 필터) | 응답 배열에서 `name`에 오늘 `YYYYMMDD` 포함 항목만, `download_url` 추출. 0건이고 `hour >= 9` 면 `{missing:true, text}` 1건 반환 |
