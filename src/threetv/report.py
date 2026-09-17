@@ -903,6 +903,29 @@ def mention_line(m: dict) -> str:
     return f"• {'🎤 ' if m.get('mentioned') else ''}{m['name']}"
 
 
+def _ko_failure_reason(reason: str) -> str:
+    """LLM 실패 사유를 한국어 한 줄로 번역해 리포트 배너에 넣는다.
+
+    원본 예외 메시지(`str(e)`)를 그대로 박으면 Gemini의 raw JSON 에러 응답
+    (영문, 예: "{'error': {'code': 503, 'message': 'This model is currently
+    experiencing high demand...'}}")이 한국어 리포트 안에 그대로 노출된다
+    (2026-09-18 실측, 텔레그램 스크린샷으로 지적받음). 원문은 이미 `log.error()`로
+    Actions 로그에 남으므로, 리포트엔 원인 분류만 한국어로 보여준다.
+    """
+    r = reason.upper()
+    if "503" in r or "UNAVAILABLE" in r or "HIGH DEMAND" in r:
+        return "Gemini 서버 일시 과부하(503)"
+    if "429" in r or "QUOTA" in r or "RESOURCE_EXHAUSTED" in r:
+        return "Gemini 무료 할당량 소진(429)"
+    if "GEMINI_API_KEY" in r:
+        return "GEMINI_API_KEY 미설정"
+    if "MAX_TOKENS" in r or "MAX_OUTPUT_TOKENS" in r or "잘렸" in reason:
+        return "응답 길이 제한 초과로 잘림"
+    if "ANTHROPIC" in r or "CLAUDE" in r:
+        return "Claude API 호출 실패"
+    return "일시적 오류"
+
+
 def _fallback_report(
     settings: dict,
     session: str,
@@ -938,7 +961,7 @@ def _fallback_report(
 
     banner = (
         "⚠️ *AI 요약 없음 — 원자료 기반 자동 리포트*\n"
-        f"LLM 호출이 모두 실패해(사유: {reason}) 방송 화면 캡처와 "
+        f"LLM 호출이 모두 실패해(사유: {_ko_failure_reason(reason)}) 방송 화면 캡처와 "
         "API 검증 시세만으로 자동 생성했습니다. 요약·전망 해석은 포함되지 않습니다."
     )
 
