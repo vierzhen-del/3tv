@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 from . import tg_format
@@ -57,6 +58,14 @@ def _call_claude(model: str, prompt: str, max_tokens: int = 8000) -> str:
     return "".join(b.text for b in resp.content if b.type == "text")
 
 
+def _is_transient_overload(exc: Exception) -> bool:
+    """503 UNAVAILABLE(과부하) 여부 — Google 응답 문구 자체가 "스파이크는 대개
+    일시적"이라고 명시하는 재시도 대상 에러. 429(할당량 소진)는 재시도해도
+    안 풀리므로 여기 포함하지 않는다."""
+    s = str(exc)
+    return "503" in s or "UNAVAILABLE" in s.upper()
+
+
 def _call_gemini(model: str, prompt: str, max_tokens: int = 8000) -> str:
     """Gemini 호출.
 
@@ -75,20 +84,39 @@ def _call_gemini(model: str, prompt: str, max_tokens: int = 8000) -> str:
     client = genai.Client(api_key=api_key)
 
     cfg: dict = {"temperature": 0.2, "max_output_tokens": max_tokens}
-    try:
-        # 사고 예산을 소액으로 제한 (0=비활성). 모델이 미지원이면 아래 except로 폴백.
-        cfg_obj = types.GenerateContentConfig(
-            **cfg, thinking_config=types.ThinkingConfig(thinking_budget=512)
-        )
-        resp = client.models.generate_content(model=model, contents=prompt, config=cfg_obj)
-    except Exception as e:
-        if "thinking" not in str(e).lower():
-            raise
-        log.info("%s는 thinking_config 미지원 → 기본 설정으로 재호출", model)
-        resp = client.models.generate_content(
-            model=model, contents=prompt,
-            config=types.GenerateContentConfig(**cfg),
-        )
+
+    def _generate():
+        try:
+            # 사고 예산을 소액으로 제한 (0=비활성). 모델이 미지원이면 아래 except로 폴백.
+            cfg_obj = types.GenerateContentConfig(
+                **cfg, thinking_config=types.ThinkingConfig(thinking_budget=512)
+            )
+            return client.models.generate_content(model=model, contents=prompt, config=cfg_obj)
+        except Exception as e:
+            if "thinking" not in str(e).lower():
+                raise
+            log.info("%s는 thinking_config 미지원 → 기본 설정으로 재호출", model)
+            return client.models.generate_content(
+                model=model, contents=prompt,
+                config=types.GenerateContentConfig(**cfg),
+            )
+
+    # 2026-09-18 실측: primary·fallback 모델이 같은 아침에 둘 다 503(과부하)로
+    # 죽어 AI 요약 없는 원자료 리포트로 열화됐다. Google 응답 문구가 "스파이크는
+    # 보통 일시적"이라고 스스로 안내하므로, 포기하기 전에 짧은 백오프로 재시도한다.
+    attempts = 3
+    resp = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = _generate()
+            break
+        except Exception as e:
+            if not _is_transient_overload(e) or attempt == attempts:
+                raise
+            wait = 8 * attempt
+            log.warning("%s 일시 과부하(503) — %d초 후 재시도 (%d/%d): %s",
+                        model, wait, attempt, attempts, e)
+            time.sleep(wait)
 
     text = resp.text or ""
     # 토큰 상한에 걸려 잘린 응답은 JSON이 깨져 어차피 못 쓴다 — 원인을 명시해 올린다
