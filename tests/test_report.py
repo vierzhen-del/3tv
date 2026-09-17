@@ -84,7 +84,10 @@ def test_llm_failure_writes_report_files(tmp_path, llm_down):
 def test_fallback_includes_quotes_and_degraded_banner(tmp_path, llm_down):
     md = _generate(tmp_path, transcript="오늘 시장 요약")["markdown_report"]
     assert "AI 요약 없음" in md          # 요약본이 아님을 사용자가 즉시 알 수 있어야
-    assert "prepayment credits" in md    # 실패 사유 명시
+    # 실패 사유는 한국어로 분류해 보여준다 — 원본 영문 API 에러 문구를 그대로
+    # 노출하지 않는다(2026-09-18 실측: raw 503 JSON이 리포트에 그대로 찍힘)
+    assert "할당량 소진" in md
+    assert "prepayment credits" not in md
     assert "나스닥" in md and "20,123.45" in md and "▲1.23%" in md
     assert "KOSPI" in md and "▼0.42%" in md
     assert "삼성전자" in md              # 보유종목 시세
@@ -346,9 +349,32 @@ def test_truncated_response_reports_token_limit_cause(tmp_path, monkeypatch):
         ),
     )
     data = _generate(tmp_path, transcript="전사")
-    # 열화 경로로 안전하게 떨어지고, 사유에 '잘렸' 이 남는다
+    # 열화 경로로 안전하게 떨어지고, 리포트엔 원인이 한국어로 분류돼 남는다
+    # (원본 영문 예외는 log.error()로 이미 Actions 로그에 남으므로 리포트에
+    # raw 문자열을 그대로 노출하지 않는다 — 2026-09-18 실측 이슈 참고)
     assert data["title_keyword"] == "원자료시황"
-    assert "잘렸" in data["markdown_report"]
+    assert "길이 제한" in data["markdown_report"]
+
+
+def test_ko_failure_reason_never_leaks_raw_english_error():
+    """리포트 배너는 raw 예외 문자열이 아니라 한국어 분류만 보여줘야 한다.
+
+    2026-09-18 실측: Gemini 503 JSON 에러(영문)가 텔레그램 리포트에 그대로
+    노출됐다 — 원인 분류로 대체해 한국어 리포트 안에 영문 API 덤프가 안
+    섞이게 한다.
+    """
+    cases = {
+        "Gemini g·gl 모두 실패: 503 UNAVAILABLE. {'error': {'code': 503, "
+        "'message': 'This model is currently experiencing high demand...'}}": "과부하",
+        "429 RESOURCE_EXHAUSTED. Your prepayment credits are depleted.": "할당량 소진",
+        "GEMINI_API_KEY 미설정": "GEMINI_API_KEY",
+        "Gemini 응답이 max_output_tokens(8000)에 걸려 잘렸습니다": "길이 제한",
+    }
+    for raw, expect_substr in cases.items():
+        translated = report_mod._ko_failure_reason(raw)
+        assert expect_substr in translated
+        assert "high demand" not in translated
+        assert "prepayment" not in translated
 
 
 def test_vision_parses_json_with_literal_newlines():
