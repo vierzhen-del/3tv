@@ -103,7 +103,7 @@ def test_download_vod_success_no_timeout(tmp_path, monkeypatch):
     out_file = tmp_path / "out.mp4"
 
     def fake_run(cmd, **kwargs):
-        out_file.write_bytes(b"0" * 1000)
+        out_file.write_bytes(b"0" * 1_500_000)
         return _run_result("", returncode=0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -111,6 +111,25 @@ def test_download_vod_success_no_timeout(tmp_path, monkeypatch):
 
     result = capture.download_vod("https://y/v", out_file, 480, 269, 2700)
     assert result == out_file
+
+
+def test_download_vod_rejects_undersized_file(tmp_path, monkeypatch):
+    """--download-sections 구간이 실제 영상 길이 밖이면 yt-dlp가 returncode
+    0으로 "성공" 처리하면서도 거의 빈 파일만 내려받는다(2026-09-21 실측:
+    noon-session 안전망 cron이 5시간48분 지연 발사돼 offset 계산이 더는
+    맞지 않게 됨). 다음 단계(프레임 추출)까지 안 가고 여기서 바로 걸러야
+    "프레임 추출 결과가 비어 있음"이라는 원인 불명확한 에러를 피한다."""
+    out_file = tmp_path / "out.mp4"
+
+    def fake_run(cmd, **kwargs):
+        out_file.write_bytes(b"0" * 1000)   # 0.001MB — 명백히 비정상
+        return _run_result("", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(capture, "_cookies_file", lambda: None)
+
+    with pytest.raises(capture.CaptureError, match="비정상적으로 작음"):
+        capture.download_vod("https://y/v", out_file, 480, 18292, 1200)
 
 
 def test_download_vod_omits_quiet_but_keeps_no_warnings(tmp_path, monkeypatch):
@@ -121,7 +140,7 @@ def test_download_vod_omits_quiet_but_keeps_no_warnings(tmp_path, monkeypatch):
 
     def fake_run(cmd, **kwargs):
         seen_cmd.extend(cmd)
-        out_file.write_bytes(b"0" * 1000)
+        out_file.write_bytes(b"0" * 1_500_000)
         return _run_result("", returncode=0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
