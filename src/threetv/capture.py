@@ -165,7 +165,21 @@ def download_vod(
         )
     if proc.returncode != 0 or not out_file.exists():
         raise CaptureError(f"VOD 다운로드 실패: {(proc.stderr or '')[-800:]}")
-    log.info("다운로드 완료: %.1f MB", out_file.stat().st_size / 1e6)
+    size = out_file.stat().st_size
+    # 라이브 녹화(위 record_stream)와 같은 최소 크기 기준. --download-sections로
+    # 요청한 구간이 실제 영상 길이 밖이면 yt-dlp가 returncode 0으로 "성공"
+    # 처리하면서도 거의 빈 파일만 내려받는다(2026-09-21 실측: noon-session
+    # 안전망 cron이 5시간48분 지연 발사돼 오전 다시보기의 offset 계산이
+    # 더 이상 맞지 않게 됐고, 0.1MB짜리 파일이 그대로 다음 단계(프레임 추출)로
+    # 넘어가 "프레임 추출 결과가 비어 있음"이라는 원인 불명확한 에러로만
+    # 드러났다). 다운로드 단계에서 바로 원인을 밝혀 실패 지점을 앞당긴다.
+    if size < 1_000_000:
+        raise CaptureError(
+            f"VOD 다운로드 파일이 비정상적으로 작음({size}B) — "
+            f"요청 구간(start={start_sec}, duration={duration_sec})이 실제 "
+            f"영상 길이 밖일 가능성. 영상: {vod_url}"
+        )
+    log.info("다운로드 완료: %.1f MB", size / 1e6)
     return out_file
 
 
