@@ -13,3 +13,4 @@ anthropic>=0.40
 yfinance>=0.2.40
 pykrx>=1.0.45
 PyNaCl>=1.5
+holidays>=0.60

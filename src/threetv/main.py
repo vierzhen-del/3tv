@@ -31,8 +31,8 @@ from pathlib import Path
 
 from . import market, news, tg_format
 from .capture import CaptureError, capture_live_session, download_vod, find_recent_vod
-from .common import (KST, load_env, load_holdings, load_settings, log, now_kst,
-                     output_dir, parse_duration, parse_kst_time,
+from .common import (KST, is_kr_holiday, load_env, load_holdings, load_settings, log,
+                     now_kst, output_dir, parse_duration, parse_kst_time,
                      setup_logging, window_offsets)
 from .frames import prepare_frames
 from .notify_kakao import send_kakao_memo
@@ -546,6 +546,17 @@ def run_etf_review(args: argparse.Namespace, settings: dict, out_dir: Path) -> i
 def run(args: argparse.Namespace) -> int:
     settings = load_settings()
     session = args.session
+
+    # 한국 공휴일엔 어느 세션이든 방송 자체가 없다 — cron/n8n은 평일(1-5)만
+    # 걸러낼 뿐 공휴일은 모르므로, 그대로 두면 방송 없는 날에도 캡처를
+    # 시도해 Gemini 할당량만 낭비하고 실패 알림이 나간다(2026-09-23, 추석이
+    # 목·금 평일과 겹쳐 발견). --vod-url/--video-file로 명시 지정한 수동
+    # 실행(과거 VOD 테스트·복구)은 공휴일 여부와 무관하게 항상 진행한다.
+    if not args.vod_url and not args.video_file and is_kr_holiday():
+        log.info("오늘(%s)은 한국 공휴일 — %s 세션 건너뜀 (방송 없음)",
+                  now_kst().strftime("%Y-%m-%d"), session)
+        return 0
+
     # 트리밍 테스트는 전체구간 결과와 겹치지 않게 별도 폴더(<session>_trim)에 저장
     out_dir = output_dir(session, tag="trim" if args.trim_start else None)
 
