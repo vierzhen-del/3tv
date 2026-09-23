@@ -61,6 +61,22 @@ def now_kst() -> datetime:
     return datetime.now(KST)
 
 
+def is_kr_holiday(date: datetime | None = None) -> bool:
+    """오늘(KST)이 한국 공휴일인지 — 3protv·겸손은힘들다 등은 한국 채널이라
+    설날·추석 같은 공휴일엔 어느 세션(us/kr/noon/night)이든 방송 자체가 없다.
+
+    ⚠️ 2026-09-23: cron은 평일(1-5)만 걸러낼 뿐 공휴일은 모른다. 마침 추석
+    (9/24~26)이 목·금(평일)과 겹쳐, 그대로 두면 방송이 없는 날에도 캡처를
+    시도해 Gemini 할당량만 낭비하고 실패 알림이 나간다. `holidays` 패키지는
+    설날/추석/부처님오신날 등 음력 기반 날짜와 대체공휴일까지 계산해 주므로
+    직접 하드코딩하지 않는다(연도가 바뀌어도 유지보수 불필요).
+    """
+    import holidays
+
+    d = (date or now_kst()).date()
+    return d in holidays.SouthKorea(years=d.year)
+
+
 def parse_kst_time(hhmm: str, base: datetime | None = None) -> datetime:
     """'HH:MM' 문자열을 오늘(KST) 날짜의 datetime으로 변환."""
     base = base or now_kst()
